@@ -186,12 +186,20 @@ export class CronScheduler {
       // Then send the actual prompt to the agent
       this.pi.sendUserMessage(job.prompt, { deliverAs: "followUp" });
 
-      // Update job execution stats
+      // Update job execution stats.
+      //
+      // `job` here is captured by the croner closure in `scheduleJob` and is
+      // therefore frozen at the value it had when the scheduler was created —
+      // reading `job.runCount` yields a stale count, so incrementing it writes
+      // the same value to storage on every fire and the counter never advances.
+      // Re-read from storage to get the latest known count.
       const nextRun = this.getNextRun(job.id);
+      const latest = this.storage.getJob(job.id);
+      const currentRunCount = latest?.runCount ?? job.runCount;
       this.storage.updateJob(job.id, {
         lastRun: new Date().toISOString(),
         lastStatus: "success",
-        runCount: job.runCount + 1,
+        runCount: currentRunCount + 1,
         nextRun: nextRun?.toISOString(),
       });
 
