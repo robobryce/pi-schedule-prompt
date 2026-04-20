@@ -48,7 +48,12 @@ export default async function (pi: ExtensionAPI) {
   // --- Session initialization ---
 
   const initializeSession = (ctx: any) => {
-    // Create storage and scheduler
+    // Idempotent: tear down any prior instance before creating a new one.
+    // Without this, every `session_start` (fires on reload/resume/fork too, not
+    // only on fresh startup) leaks a live croner timer into the event loop,
+    // accumulating duplicate fires for every recurring job over time.
+    cleanupSession(ctx);
+
     storage = new CronStorage(ctx.cwd);
     scheduler = new CronScheduler(storage, pi);
     widget = new CronWidget(storage, scheduler, pi, () => widgetVisible);
@@ -92,19 +97,16 @@ export default async function (pi: ExtensionAPI) {
 
   // --- Lifecycle events ---
 
+  // `session_start` fires with reason ∈ {startup, reload, new, resume, fork},
+  // so it covers all the cases where state needs to be (re)initialised. The
+  // idempotent `initializeSession` above tears down the prior scheduler before
+  // creating a new one, so we no longer need separate switch/fork handlers —
+  // and their previous event names (`session_switch`, `session_fork`) were
+  // typos in the first place: the real pi events are `session_before_switch`
+  // and `session_before_fork`, which fire *before* the switch completes and
+  // are therefore not the right point to reinitialise anyway.
+
   pi.on("session_start", async (_event, ctx) => {
-    initializeSession(ctx);
-  });
-
-  pi.on("session_switch", async (_event, ctx) => {
-    autoCleanupDisabledJobs();
-    cleanupSession(ctx);
-    initializeSession(ctx);
-  });
-
-  pi.on("session_fork", async (_event, ctx) => {
-    autoCleanupDisabledJobs();
-    cleanupSession(ctx);
     initializeSession(ctx);
   });
 
