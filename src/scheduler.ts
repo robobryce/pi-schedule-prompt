@@ -204,12 +204,20 @@ export class CronScheduler {
       // Then send the actual prompt to the agent
       this.pi.sendUserMessage(job.prompt, { deliverAs: "followUp" });
 
-      // Update job execution stats
+      // Update job execution stats.
+      //
+      // `job` here is captured by the croner closure in `scheduleJob` and is
+      // therefore frozen at the value it had when the scheduler was created —
+      // reading `job.runCount` yields a stale count, so incrementing it writes
+      // the same value to storage on every fire and the counter never advances.
+      // Re-read from storage to get the latest known count.
       const nextRun = this.getNextRun(job.id);
+      const latest = this.storage.getJob(job.id);
+      const currentRunCount = latest?.runCount ?? job.runCount;
       this.storage.updateJob(job.id, {
         lastRun: new Date().toISOString(),
         lastStatus: "success",
-        runCount: job.runCount + 1,
+        runCount: currentRunCount + 1,
         nextRun: nextRun?.toISOString(),
       });
 
@@ -276,10 +284,14 @@ export class CronScheduler {
           const snippet = result.text.length > SUBAGENT_OUTPUT_SNIPPET_LENGTH
             ? result.text.slice(0, SUBAGENT_OUTPUT_SNIPPET_LENGTH) + "…"
             : result.text;
+          // Re-read runCount from storage; `job` here is the closure-captured
+          // snapshot from scheduleJob and would yield a stale count.
+          const latest = this.storage.getJob(job.id);
+          const currentRunCount = latest?.runCount ?? job.runCount;
           this.storage.updateJob(job.id, {
             lastRun: new Date().toISOString(),
             lastStatus: "success",
-            runCount: job.runCount + 1,
+            runCount: currentRunCount + 1,
             nextRun: nextRun?.toISOString(),
           });
           this.emitChange({ type: "fire", job });

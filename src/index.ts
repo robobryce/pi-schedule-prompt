@@ -5,14 +5,14 @@
  * - A `schedule_prompt` tool for managing scheduled prompts
  * - A widget displaying all scheduled prompts with status
  * - /schedule-prompt command for interactive management
- * - Ctrl+Alt+P shortcut to toggle widget
- * - Persistence via .pi/schedule-prompts.json
+ * - Persistence via .pi/schedule-prompts.json (jobs) and .pi/schedule-prompts-settings.json (settings)
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { nanoid } from "nanoid";
 import { CronScheduler } from "./scheduler.js";
+import { loadSettings, saveSettings } from "./settings.js";
 import { CronStorage } from "./storage.js";
 import { createCronTool } from "./tool.js";
 import { CronWidget } from "./ui/cron-widget.js";
@@ -77,10 +77,18 @@ export default async function (pi: ExtensionAPI) {
   // --- Session initialization ---
 
   const initializeSession = (ctx: any) => {
-    // Create storage and scheduler
+    // Idempotent: tear down any prior instance before creating a new one.
+    // Without this, every `session_start` (fires on reload/resume/fork too, not
+    // only on fresh startup) leaks a live croner timer into the event loop,
+    // accumulating duplicate fires for every recurring job over time.
+    cleanupSession(ctx);
+
     storage = new CronStorage(ctx.cwd);
     scheduler = new CronScheduler(storage, pi, ctx);
     widget = new CronWidget(storage, scheduler, pi, () => widgetVisible);
+
+    const s = loadSettings(ctx.cwd);
+    if (typeof s.widgetVisible === "boolean") widgetVisible = s.widgetVisible;
 
     // Load and start all enabled jobs
     scheduler.start();
@@ -121,19 +129,16 @@ export default async function (pi: ExtensionAPI) {
 
   // --- Lifecycle events ---
 
+  // `session_start` fires with reason ∈ {startup, reload, new, resume, fork},
+  // so it covers all the cases where state needs to be (re)initialised. The
+  // idempotent `initializeSession` above tears down the prior scheduler before
+  // creating a new one, so we no longer need separate switch/fork handlers —
+  // and their previous event names (`session_switch`, `session_fork`) were
+  // typos in the first place: the real pi events are `session_before_switch`
+  // and `session_before_fork`, which fire *before* the switch completes and
+  // are therefore not the right point to reinitialise anyway.
+
   pi.on("session_start", async (_event, ctx) => {
-    initializeSession(ctx);
-  });
-
-  pi.on("session_switch", async (_event, ctx) => {
-    autoCleanupDisabledJobs();
-    cleanupSession(ctx);
-    initializeSession(ctx);
-  });
-
-  pi.on("session_fork", async (_event, ctx) => {
-    autoCleanupDisabledJobs();
-    cleanupSession(ctx);
     initializeSession(ctx);
   });
 
@@ -153,7 +158,7 @@ export default async function (pi: ExtensionAPI) {
         "Toggle Job (Enable/Disable)",
         "Remove Job",
         "Cleanup Disabled Jobs",
-        "Toggle Widget Visibility",
+        "Settings",
       ]);
 
       if (!action) return;
@@ -164,7 +169,7 @@ export default async function (pi: ExtensionAPI) {
         "Toggle Job (Enable/Disable)": "toggle",
         "Remove Job": "remove",
         "Cleanup Disabled Jobs": "cleanup",
-        "Toggle Widget Visibility": "toggleWidget",
+        "Settings": "settings",
       };
       const actionKey = actionMap[action];
 
@@ -221,8 +226,9 @@ export default async function (pi: ExtensionAPI) {
             schedulePrompt = "Enter interval (e.g., 5m, 1h, 30s)";
           }
 
-          const schedule = await ctx.ui.input("Schedule", schedulePrompt);
-          if (!schedule) return;
+          const scheduleRaw = await ctx.ui.input("Schedule", schedulePrompt);
+          if (!scheduleRaw) return;
+          const schedule = scheduleRaw.trim();
 
           const prompt = await ctx.ui.input("Prompt", "Enter the prompt to execute");
           if (!prompt) return;
@@ -359,16 +365,27 @@ export default async function (pi: ExtensionAPI) {
           break;
         }
 
-        case "toggleWidget": {
-          widgetVisible = !widgetVisible;
-          if (widgetVisible) {
-            widget.show(ctx);
-            ctx.ui.notify("Widget enabled (shows when jobs exist)", "info");
-          } else {
-            widget.hide(ctx);
-            ctx.ui.notify("Widget disabled (hidden)", "info");
+        case "settings": {
+          // Loop so the menu redraws with current state after each change —
+          // the menu is the truth display; only persist failures need a toast.
+          while (true) {
+            const choice = await ctx.ui.select("Settings", [
+              `Widget visibility: ${widgetVisible ? "shown" : "hidden"}`,
+              "Back",
+            ]);
+            if (!choice || choice === "Back") return;
+            if (choice.startsWith("Widget visibility:")) {
+              widgetVisible = !widgetVisible;
+              widgetVisible ? widget.show(ctx) : widget.hide(ctx);
+              const persisted = saveSettings(ctx.cwd, { widgetVisible });
+              if (!persisted) {
+                ctx.ui.notify(
+                  `Widget ${widgetVisible ? "shown" : "hidden"} (session only; failed to persist)`,
+                  "warning",
+                );
+              }
+            }
           }
-          break;
         }
       }
     },

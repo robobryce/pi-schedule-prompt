@@ -10,26 +10,19 @@ import type { Model } from "@mariozechner/pi-ai";
 import {
   type AgentSession,
   type AgentSessionEvent,
-  bashTool,
   createAgentSession,
   DefaultResourceLoader,
   type ExtensionContext,
-  editTool,
-  findTool,
   getAgentDir,
-  grepTool,
-  lsTool,
-  readTool,
   SessionManager,
   SettingsManager,
-  writeTool,
 } from "@mariozechner/pi-coding-agent";
+
+const DEFAULT_TOOL_NAMES = ["bash", "read", "edit", "write", "grep", "find", "ls"];
 
 export type SubagentResult =
   | { ok: true; text: string }
   | { ok: false; error: string };
-
-const DEFAULT_TOOLS = [bashTool, readTool, editTool, writeTool, grepTool, findTool, lsTool];
 
 export function resolveModel(
   registry: ExtensionContext["modelRegistry"],
@@ -124,7 +117,7 @@ export async function runSubagentOnce(
       settingsManager: SettingsManager.create(ctx.cwd, agentDir),
       modelRegistry: ctx.modelRegistry,
       model,
-      tools: DEFAULT_TOOLS,
+      tools: DEFAULT_TOOL_NAMES,
       resourceLoader: loader,
     });
 
