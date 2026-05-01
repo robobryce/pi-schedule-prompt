@@ -7,13 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-01
+
 ### Added
 - Optional `model` field on scheduled jobs (closes #4, #7): when set, the prompt runs in a fresh in-process `AgentSession` with the chosen model instead of being injected into the current chat. The current chat keeps its own model and context untouched. Permissive resolution: `"haiku"`, `"sonnet"`, or `"provider/model-id"` — first match in the available registry wins
 - Optional `notify` flag (subagent jobs only): when `true`, the subagent's result is delivered to the parent agent as a follow-up that triggers a new turn. Default is silent. No-op for inline (no-model) jobs — the prompt itself already wakes the parent — and accepted without rejection so existing inline jobs aren't broken by stray `notify` values
 - Subagent lifecycle markers in the chat: `subagent_start`, `subagent_done` (with a 500-char output snippet), and `subagent_error` — rendered with a `(subagent: <model>)` tag
 - Widget badges for subagent jobs: `[<model>]` per row, with a trailing `!` when `notify=true`
 - Active subagents are tracked per `AbortController` and aborted when the scheduler stops (session shutdown / switch / fork), preventing late completions and unhandled rejections
-- Test suite (`vitest`): scheduler, subagent runner, and tool — 40 tests covering the new paths
+- Test suite (`vitest`): scheduler, subagent runner, and tool — 45 tests covering the new paths
 - CI workflow (`.github/workflows/ci.yml`) and Biome config
 - Persistent widget visibility setting via a two-layer config (closes #2):
   - Global: `~/.pi/agent/schedule-prompts-settings.json` — manual user defaults
@@ -27,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Replaced "Toggle Widget Visibility" menu item with the new `Settings` submenu — the menu itself is the source of truth for current state, removing the need for a success toast
 - Schedule input (`/schedule-prompt → Add New Job`) is trimmed before validation, so pasted strings with surrounding whitespace validate cleanly
 - Package description updated to reference "Pi's Heartbeat"
+- Migrated from `@sinclair/typebox` (v0.34.x legacy line) to the unscoped `typebox` (^1.1.24) package — pi's runtime packages migrated to the new namespace, and mixing the two produced "TUnsafe<string> not assignable to TSchema" errors across `tool.ts` / `types.ts`
 
 ### Removed
 - Success toast on widget visibility toggle (the menu shows the new state directly). The "session only; failed to persist" warning toast is retained because it's the only signal the user couldn't otherwise observe.
@@ -44,4 +47,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-Earlier releases (`v0.1.0`–`v0.1.2`): see git tags.
+Earlier releases (`v0.1.0`–`v0.1.2`): see [git tags](https://github.com/tintinweb/pi-schedule-prompt/tags).
