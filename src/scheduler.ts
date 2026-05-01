@@ -1,7 +1,17 @@
+import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Cron } from "croner";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import type { CronJob, CronChangeEvent } from "./types.js";
 import type { CronStorage } from "./storage.js";
+import { runSubagentOnce, type SubagentResult } from "./subagent.js";
+import type { CronChangeEvent, CronJob } from "./types.js";
+
+const SUBAGENT_OUTPUT_SNIPPET_LENGTH = 500;
+
+/** Truncate `text` to `SUBAGENT_OUTPUT_SNIPPET_LENGTH`, appending an ellipsis if cut. */
+function snippet(text: string): string {
+  return text.length > SUBAGENT_OUTPUT_SNIPPET_LENGTH
+    ? text.slice(0, SUBAGENT_OUTPUT_SNIPPET_LENGTH) + "…"
+    : text;
+}
 
 /**
  * Manages cron job scheduling and execution
@@ -9,20 +19,33 @@ import type { CronStorage } from "./storage.js";
 export class CronScheduler {
   private jobs = new Map<string, Cron>();
   private intervals = new Map<string, NodeJS.Timeout>();
+  private activeSubagents = new Set<AbortController>();
   private readonly storage: CronStorage;
   private readonly pi: ExtensionAPI;
+  private readonly ctx: ExtensionContext;
 
-  constructor(storage: CronStorage, pi: ExtensionAPI) {
+  constructor(storage: CronStorage, pi: ExtensionAPI, ctx: ExtensionContext) {
     this.storage = storage;
     this.pi = pi;
+    this.ctx = ctx;
   }
 
   /**
-   * Start the scheduler with all enabled jobs
+   * Start the scheduler with all enabled jobs.
+   *
+   * Also clears any stale `lastStatus: "running"` from a prior session that was
+   * killed mid-execution (subagent aborted by shutdown, process kill, etc.). The
+   * field is informational — it tracks the *last completed* run — and would
+   * otherwise stick the widget on `⟳` until the cron next fires. We don't
+   * pretend the interrupted run "succeeded": we just drop the stale flag so the
+   * row reads as ready-to-run instead of stuck.
    */
   start(): void {
     const allJobs = this.storage.getAllJobs();
     for (const job of allJobs) {
+      if (job.lastStatus === "running") {
+        this.storage.updateJob(job.id, { lastStatus: undefined });
+      }
       if (job.enabled) {
         this.scheduleJob(job);
       }
@@ -44,6 +67,13 @@ export class CronScheduler {
       clearInterval(interval);
     }
     this.intervals.clear();
+
+    // Abort any in-flight subagent runs so they don't keep streaming or post
+    // markers against a stale pi reference after session shutdown.
+    for (const controller of this.activeSubagents) {
+      controller.abort();
+    }
+    this.activeSubagents.clear();
   }
 
   /**
@@ -166,6 +196,11 @@ export class CronScheduler {
   private async executeJob(job: CronJob): Promise<void> {
     console.log(`Executing scheduled prompt: ${job.name} (${job.id})`);
 
+    if (job.model) {
+      this.executeJobInSubagent(job);
+      return;
+    }
+
     try {
       // Update status to running
       this.storage.updateJob(job.id, {
@@ -173,17 +208,22 @@ export class CronScheduler {
       });
       this.emitChange({ type: "fire", job });
 
-      // Send a visible marker message for the scheduled prompt
-      this.pi.sendMessage(
-        {
-          customType: "scheduled_prompt",
-          content: [{ type: "text", text: job.prompt }],
-          display: true,
-          details: { jobId: job.id, jobName: job.name, prompt: job.prompt },
-        }
-      );
+      // Visible-only marker. The renderer reads from `details`, so `content`
+      // is intentionally empty — putting the prompt text in `content` would
+      // inject it into the LLM context a second time alongside the
+      // `sendUserMessage` delivery below, producing duplicate turns /
+      // "PROMPT\n\nPROMPT" rendering when the agent was streaming at fire
+      // time. No options means: idle → silent append + emit (marker shows
+      // before the user message in the chat), streaming → `agent.steer` with
+      // empty content (no LLM context change, no extra turn triggered).
+      this.pi.sendMessage({
+        customType: "scheduled_prompt",
+        content: [],
+        display: true,
+        details: { jobId: job.id, jobName: job.name, prompt: job.prompt },
+      });
 
-      // Then send the actual prompt to the agent
+      // Then send the actual prompt to the agent — this is the single LLM-visible delivery.
       this.pi.sendUserMessage(job.prompt, { deliverAs: "followUp" });
 
       // Update job execution stats.
@@ -216,6 +256,137 @@ export class CronScheduler {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  /**
+   * Run a job's prompt in a fresh in-process AgentSession with the chosen model.
+   * Fire-and-forget: the cron tick returns immediately so other jobs keep firing.
+   */
+  private executeJobInSubagent(job: CronJob): void {
+    const model = job.model!;
+    const notify = job.notify === true;
+    this.storage.updateJob(job.id, { lastStatus: "running" });
+    this.emitChange({ type: "fire", job });
+
+    // Start marker is purely visual. Empty `content` keeps it out of the
+    // parent's LLM context (the subagent has the prompt directly). No options
+    // means: idle → silent append + emit (immediately visible), streaming →
+    // `agent.steer` (inserts into the current turn's loop, no new turn). With
+    // empty content the steered message contributes nothing to the LLM, so
+    // neither path triggers a parent reply.
+    this.pi.sendMessage({
+      customType: "scheduled_prompt",
+      content: [],
+      display: true,
+      details: {
+        jobId: job.id,
+        jobName: job.name,
+        prompt: job.prompt,
+        mode: "subagent_start",
+        model,
+      },
+    });
+
+    const controller = new AbortController();
+    this.activeSubagents.add(controller);
+
+    void (async () => {
+      try {
+        let result: SubagentResult;
+        try {
+          result = await runSubagentOnce(this.ctx, job.prompt, model, controller.signal);
+        } finally {
+          this.activeSubagents.delete(controller);
+        }
+
+        // Scheduler was stopped (session shutdown / switch / fork) while we were
+        // running. Don't touch storage or post markers — pi may be invalidated.
+        if (controller.signal.aborted) return;
+
+        const nextRun = this.getNextRun(job.id);
+
+        // Always advance the storage state to a terminal status BEFORE attempting
+        // to post the marker. The marker is best-effort (pi may be invalidated
+        // during teardown) and must never leave the job stuck in "running".
+        if (result.ok) {
+          const outputSnippet = snippet(result.text);
+          // Re-read runCount from storage; `job` here is the closure-captured
+          // snapshot from scheduleJob and would yield a stale count.
+          const latest = this.storage.getJob(job.id);
+          const currentRunCount = latest?.runCount ?? job.runCount;
+          this.storage.updateJob(job.id, {
+            lastRun: new Date().toISOString(),
+            lastStatus: "success",
+            runCount: currentRunCount + 1,
+            nextRun: nextRun?.toISOString(),
+          });
+          this.emitChange({ type: "fire", job });
+          try {
+            // notify=true: snippet in `content` + followUp/triggerTurn wakes
+            // the parent — it sees the result and reacts.
+            // notify=false: empty content + no options — renderer still draws
+            // the snippet from `details.output`, but the marker is silent
+            // (idle: append+emit, streaming: steer with empty content). The
+            // previous `{deliverAs: "followUp", triggerTurn: false}` was the
+            // bug: during a streaming parent response, the followUp branch
+            // ignores triggerTurn and still queues a new turn after the stream.
+            this.pi.sendMessage(
+              {
+                customType: "scheduled_prompt",
+                content: notify ? [{ type: "text", text: outputSnippet }] : [],
+                display: true,
+                details: {
+                  jobId: job.id,
+                  jobName: job.name,
+                  prompt: job.prompt,
+                  mode: "subagent_done",
+                  model,
+                  output: outputSnippet,
+                },
+              },
+              notify ? { deliverAs: "followUp", triggerTurn: true } : undefined,
+            );
+          } catch (markerErr) {
+            console.error(`Failed to post subagent_done marker for job ${job.id}:`, markerErr);
+          }
+        } else {
+          // Truncate the error the same way as the success snippet — verbose
+          // API errors / stack traces would otherwise overflow the chat row.
+          const errorSnippet = snippet(result.error);
+          this.storage.updateJob(job.id, {
+            lastRun: new Date().toISOString(),
+            lastStatus: "error",
+            nextRun: nextRun?.toISOString(),
+          });
+          this.emitChange({ type: "error", jobId: job.id, error: errorSnippet });
+          try {
+            // Same notify branching as the done marker — see comment above.
+            this.pi.sendMessage(
+              {
+                customType: "scheduled_prompt",
+                content: notify ? [{ type: "text", text: errorSnippet }] : [],
+                display: true,
+                details: {
+                  jobId: job.id,
+                  jobName: job.name,
+                  prompt: job.prompt,
+                  mode: "subagent_error",
+                  model,
+                  error: errorSnippet,
+                },
+              },
+              notify ? { deliverAs: "followUp", triggerTurn: true } : undefined,
+            );
+          } catch (markerErr) {
+            console.error(`Failed to post subagent_error marker for job ${job.id}:`, markerErr);
+          }
+        }
+      } catch (error) {
+        // Outer backstop: anything else (e.g. storage write failure) shouldn't
+        // escape the IIFE as an unhandled rejection.
+        console.error(`Subagent completion handler failed for job ${job.id}:`, error);
+      }
+    })();
   }
 
   /**

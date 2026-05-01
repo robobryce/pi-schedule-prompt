@@ -9,14 +9,13 @@
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Key } from "@mariozechner/pi-tui";
-import { Container, Text } from "@mariozechner/pi-tui";
-import { CronStorage } from "./storage.js";
+import { Text } from "@mariozechner/pi-tui";
+import { nanoid } from "nanoid";
 import { CronScheduler } from "./scheduler.js";
+import { loadSettings, saveSettings } from "./settings.js";
+import { CronStorage } from "./storage.js";
 import { createCronTool } from "./tool.js";
 import { CronWidget } from "./ui/cron-widget.js";
-import { loadSettings, saveSettings } from "./settings.js";
-import { nanoid } from "nanoid";
 
 export default async function (pi: ExtensionAPI) {
   let storage: CronStorage;
@@ -26,16 +25,46 @@ export default async function (pi: ExtensionAPI) {
 
   // Register custom message renderer for scheduled prompts
   pi.registerMessageRenderer("scheduled_prompt", (message, _options, theme) => {
-    const details = message.details as { jobId: string; jobName: string; prompt: string } | undefined;
+    const details = message.details as
+      | {
+          jobId: string;
+          jobName: string;
+          prompt: string;
+          mode?: "subagent_start" | "subagent_done" | "subagent_error";
+          model?: string;
+          output?: string;
+          error?: string;
+        }
+      | undefined;
     const jobName = details?.jobName || "Unknown";
     const prompt = details?.prompt || "";
-    
-    return new Text(
-      theme.fg("accent", `🕐 Scheduled: ${jobName}`) + 
-      (prompt ? theme.fg("dim", ` → "${prompt}"`) : ""),
-      0,
-      0
-    );
+    const model = details?.model;
+    const tag = model ? ` (subagent: ${model})` : "";
+
+    let line: string;
+    switch (details?.mode) {
+      case "subagent_start":
+        line =
+          theme.fg("accent", `🕐 Scheduled${tag}: ${jobName}`) +
+          (prompt ? theme.fg("dim", ` → "${prompt}"`) : "");
+        break;
+      case "subagent_done":
+        line =
+          theme.fg("accent", `✓ Scheduled${tag} finished: ${jobName}`) +
+          (details?.output ? theme.fg("dim", ` → ${details.output}`) : "");
+        break;
+      case "subagent_error":
+        line =
+          theme.fg("error", `✗ Scheduled${tag} failed: ${jobName}`) +
+          (details?.error ? theme.fg("dim", ` → ${details.error}`) : "");
+        break;
+      default:
+        line =
+          theme.fg("accent", `🕐 Scheduled: ${jobName}`) +
+          (prompt ? theme.fg("dim", ` → "${prompt}"`) : "");
+    }
+
+    return new Text(line, 0, 0);
   });
 
   // Register the tool once with getter functions
@@ -55,7 +84,7 @@ export default async function (pi: ExtensionAPI) {
     cleanupSession(ctx);
 
     storage = new CronStorage(ctx.cwd);
-    scheduler = new CronScheduler(storage, pi);
+    scheduler = new CronScheduler(storage, pi, ctx);
     widget = new CronWidget(storage, scheduler, pi, () => widgetVisible);
 
     const s = loadSettings(ctx.cwd);
@@ -100,16 +129,10 @@ export default async function (pi: ExtensionAPI) {
 
   // --- Lifecycle events ---
 
-  // `session_start` fires with reason ∈ {startup, reload, new, resume, fork},
-  // so it covers all the cases where state needs to be (re)initialised. The
-  // idempotent `initializeSession` above tears down the prior scheduler before
-  // creating a new one, so we no longer need separate switch/fork handlers —
-  // and their previous event names (`session_switch`, `session_fork`) were
-  // typos in the first place: the real pi events are `session_before_switch`
-  // and `session_before_fork`, which fire *before* the switch completes and
-  // are therefore not the right point to reinitialise anyway.
-
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", async (event, ctx) => {
+    if (event.reason !== "startup") {
+      autoCleanupDisabledJobs();
+    }
     initializeSession(ctx);
   });
 
@@ -218,7 +241,7 @@ export default async function (pi: ExtensionAPI) {
               }
             } else if (jobType === "once") {
               const date = new Date(schedule);
-              if (isNaN(date.getTime())) {
+              if (Number.isNaN(date.getTime())) {
                 ctx.ui.notify("Invalid timestamp format", "error");
                 return;
               }

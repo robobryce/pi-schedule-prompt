@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Optional `model` field on scheduled jobs (closes #4, #7): when set, the prompt runs in a fresh in-process `AgentSession` with the chosen model instead of being injected into the current chat. The current chat keeps its own model and context untouched. Permissive resolution: `"haiku"`, `"sonnet"`, or `"provider/model-id"` — first match in the available registry wins
+- Optional `notify` flag (subagent jobs only): when `true`, the subagent's result is delivered to the parent agent as a follow-up that triggers a new turn. Default is silent. No-op for inline (no-model) jobs — the prompt itself already wakes the parent — and accepted without rejection so existing inline jobs aren't broken by stray `notify` values
+- Subagent lifecycle markers in the chat: `subagent_start`, `subagent_done` (with a 500-char output snippet), and `subagent_error` — rendered with a `(subagent: <model>)` tag
+- Widget badges for subagent jobs: `[<model>]` per row, with a trailing `!` when `notify=true`
+- Active subagents are tracked per `AbortController` and aborted when the scheduler stops (session shutdown / switch / fork), preventing late completions and unhandled rejections
+- Test suite (`vitest`): scheduler, subagent runner, and tool — 40 tests covering the new paths
+- CI workflow (`.github/workflows/ci.yml`) and Biome config
 - Persistent widget visibility setting via a two-layer config (closes #2):
   - Global: `~/.pi/agent/schedule-prompts-settings.json` — manual user defaults
   - Project: `<cwd>/.pi/schedule-prompts-settings.json` — written by the UI
@@ -15,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Settings` submenu in `/schedule-prompt` displaying the current widget visibility state live in the row label, with redraw after each change
 
 ### Changed
+- `executeJob` branches on `job.model`: with no model, prompt is injected into the current chat (existing behavior); with a model, runs the prompt in a subagent. The marker is posted before `sendUserMessage` so it always lands above the prompt
+- `model` parameter must be a non-empty string (`minLength: 1` in the schema, plus runtime checks in `add` and `update`). To switch a job from subagent back to inline mode, remove and re-add it without `model` — there's no in-place clearing
 - Replaced "Toggle Widget Visibility" menu item with the new `Settings` submenu — the menu itself is the source of truth for current state, removing the need for a success toast
 - Schedule input (`/schedule-prompt → Add New Job`) is trimmed before validation, so pasted strings with surrounding whitespace validate cleanly
 - Package description updated to reference "Pi's Heartbeat"
@@ -25,7 +34,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Scheduler no longer leaks croner timers across `session_start` (which fires on reload/resume/fork too): `initializeSession` is now idempotent and tears down any prior scheduler/widget before creating new ones, eliminating duplicate fires of recurring jobs in long-lived sessions (#3)
-- `runCount` now advances on every fire: `executeJob` re-reads the job from storage instead of using the closure-captured snapshot, which previously kept writing the same stale `snapshot + 1` value (#3)
+- `runCount` now advances on every fire: `executeJob` re-reads the job from storage instead of using the closure-captured snapshot, which previously kept writing the same stale `snapshot + 1` value (#3). Same fix applied to the subagent execution path (#7)
+- Subagent jobs no longer leave `lastStatus: "running"` if the post-completion marker `pi.sendMessage` throws: storage is advanced to the terminal status before the (best-effort) marker is posted, so a teardown-time failure can't crash the process or stick the job
+- Scheduled prompts no longer inject twice into the parent agent's context: the chat marker now carries empty `content` so it's purely a UI event — the renderer still draws it from `details`, and only `sendUserMessage` carries the prompt to the LLM. Previously the prompt text was in both, producing duplicate turns / "PROMPT\n\nPROMPT" rendering, especially when the agent was streaming at fire time
+- `notify: false` on subagent jobs is now genuinely silent: the done/error markers are posted with no delivery options (instead of `{deliverAs: "followUp", triggerTurn: false}`) so the parent agent isn't woken even when it was streaming at completion time — pi's `sendCustomMessage` would otherwise take the `followUp` branch and queue a turn regardless of `triggerTurn`. The renderer still surfaces the snippet/error from `details`. `notify: true` still uses `followUp` + `triggerTurn: true` and carries the result snippet in `content` so the parent can react to it
+- Stale `lastStatus: "running"` no longer persists across sessions: `CronScheduler.start()` clears the flag for any job that was interrupted mid-execution (subagent aborted by shutdown, process kill). Without this, the widget would render `⟳` for a job that isn't actually running until the cron next fired
+- Subagent error messages are now truncated to 500 chars with an ellipsis, matching the success-snippet behavior — verbose API errors / stack traces would otherwise overflow the chat row when the marker is rendered
+- `update` action now resolves relative-time schedules (`+5m`, `+10s`, etc.) the same way `add` does, so `update {schedule: "+5m"}` no longer fails with "Invalid timestamp: +5m". Same past-timestamp / too-soon guards as `add`
 
 ---
 
