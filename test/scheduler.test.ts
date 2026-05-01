@@ -152,6 +152,25 @@ describe("CronScheduler — subagent path marker delivery", () => {
     expect(doneMsg.details.output.endsWith("…")).toBe(true);
   });
 
+  it("truncates long error messages the same way as success snippets", async () => {
+    const longErr = "boom ".repeat(200); // 1000 chars
+    mockRunSubagentOnce.mockResolvedValue({ ok: false, error: longErr });
+    const pi = makePi();
+    const job = exampleJob({ model: "haiku", notify: true });
+    const scheduler = new CronScheduler(makeStorage([job]), pi, makeCtx());
+
+    (scheduler as any).executeJobInSubagent(job);
+    await vi.waitFor(() => expect(pi.sendMessage).toHaveBeenCalledTimes(2));
+
+    const [errMsg] = pi.sendMessage.mock.calls[1];
+    // Both `details.error` (renderer) and `content` (LLM, since notify=true)
+    // see the truncated form so neither floods the chat with stack traces /
+    // verbose API errors.
+    expect(errMsg.details.error).toHaveLength(501);
+    expect(errMsg.details.error.endsWith("…")).toBe(true);
+    expect(errMsg.content[0].text).toEqual(errMsg.details.error);
+  });
+
   it("updates lastStatus and increments runCount on success", async () => {
     mockRunSubagentOnce.mockResolvedValue({ ok: true, text: "done" });
     const pi = makePi();
@@ -178,6 +197,45 @@ describe("CronScheduler — subagent path marker delivery", () => {
     await vi.waitFor(() => expect(storage.getJob("job-1").lastStatus).toBe("error"));
 
     expect(storage.getJob("job-1").runCount).toBe(7);
+  });
+});
+
+describe("CronScheduler — start() recovery", () => {
+  it("clears stale lastStatus=running on start (interrupted-by-shutdown recovery)", () => {
+    // Simulates the previous session crashing/aborting mid-execution: storage
+    // ended up with `lastStatus: "running"` because the IIFE bailed out on the
+    // abort signal before reaching its terminal-status update. Without the
+    // sweep, the widget would render `⟳` for a job that isn't actually running
+    // until the cron next fires.
+    //
+    // Jobs use type=cron with a valid expression so scheduleJob() doesn't
+    // overwrite lastStatus during start() (the once-with-past-timestamp path
+    // sets lastStatus="error" itself).
+    const pi = makePi();
+    const cronSchedule = "0 0 * * * *"; // hourly
+    const stuckJob = exampleJob({
+      id: "stuck", type: "cron", schedule: cronSchedule, lastStatus: "running",
+    });
+    const cleanJob = exampleJob({
+      id: "clean", type: "cron", schedule: cronSchedule, lastStatus: "success",
+    });
+    const errorJob = exampleJob({
+      id: "errored", type: "cron", schedule: cronSchedule, lastStatus: "error",
+    });
+    const storage = makeStorage([stuckJob, cleanJob, errorJob]);
+    const scheduler = new CronScheduler(storage, pi, makeCtx());
+
+    try {
+      scheduler.start();
+
+      expect(storage.getJob("stuck").lastStatus).toBeUndefined();
+      // Other lastStatus values are left alone — we only sweep the one that
+      // signals an interrupted run.
+      expect(storage.getJob("clean").lastStatus).toBe("success");
+      expect(storage.getJob("errored").lastStatus).toBe("error");
+    } finally {
+      scheduler.stop(); // tear down the live croner timers we just started
+    }
   });
 });
 

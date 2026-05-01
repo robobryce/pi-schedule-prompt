@@ -57,6 +57,14 @@ export function createCronTool(
               );
             }
 
+            // Defense-in-depth — the schema also enforces this with minLength: 1,
+            // but tool callers can bypass the schema by passing params directly.
+            if (params.model !== undefined && params.model.length === 0) {
+              throw new Error(
+                "'model' must be a non-empty string. Omit the field for inline (no-model) jobs."
+              );
+            }
+
             // Generate name if not provided
             const jobName = params.name || `job-${nanoid(6)}`;
 
@@ -259,6 +267,15 @@ export function createCronTool(
               throw new Error(`Job not found: ${params.jobId}`);
             }
 
+            // Reject empty-string model (schema also enforces minLength: 1).
+            // To switch a job from subagent → inline mode, remove and re-add
+            // it without `model` — there's no in-place clearing.
+            if (params.model !== undefined && params.model.length === 0) {
+              throw new Error(
+                "'model' must be a non-empty string. To switch a job from subagent back to inline, remove and re-add it without a model."
+              );
+            }
+
             const updates: Partial<CronJob> = {};
             if (params.name) updates.name = params.name;
             if (params.prompt) updates.prompt = params.prompt;
@@ -267,7 +284,11 @@ export function createCronTool(
             if (params.notify !== undefined) updates.notify = params.notify;
 
             if (params.schedule) {
-              // Validate new schedule
+              // Validate the new schedule using the same resolution rules as
+              // `add`: relative time (`+5m`) → ISO, ISO accepted as-is, cron
+              // validated by croner. Without this, `update {schedule: "+5m"}`
+              // failed with "Invalid timestamp: +5m" because `add` resolved
+              // relative times pre-save but `update` didn't.
               const type = job.type;
               if (type === "interval") {
                 const parsed = CronScheduler.parseInterval(params.schedule);
@@ -278,11 +299,29 @@ export function createCronTool(
                 updates.schedule = params.schedule;
                 updates.intervalMs = intervalMs;
               } else if (type === "once") {
-                const date = new Date(params.schedule);
-                if (Number.isNaN(date.getTime())) {
-                  throw new Error(`Invalid timestamp: ${params.schedule}`);
+                const relativeTime = CronScheduler.parseRelativeTime(params.schedule);
+                if (relativeTime) {
+                  updates.schedule = relativeTime;
+                } else {
+                  const date = new Date(params.schedule);
+                  if (Number.isNaN(date.getTime())) {
+                    throw new Error(
+                      `Invalid timestamp: ${params.schedule}. Use ISO format or relative time like '+10s', '+5m'`
+                    );
+                  }
+                  const delay = date.getTime() - Date.now();
+                  if (delay < 0) {
+                    throw new Error(
+                      `Timestamp is in the past: ${date.toISOString()}. Current time: ${new Date().toISOString()}`
+                    );
+                  }
+                  if (delay < 5000) {
+                    throw new Error(
+                      `Timestamp is too soon (${Math.round(delay / 1000)}s). For delays under 5s, use relative time like '+${Math.ceil(delay / 1000)}s' instead, or schedule at least 5s in the future.`
+                    );
+                  }
+                  updates.schedule = date.toISOString();
                 }
-                updates.schedule = date.toISOString();
               } else {
                 const validation = CronScheduler.validateCronExpression(params.schedule);
                 if (!validation.valid) {

@@ -180,7 +180,7 @@ describe("schedule_prompt — notify behavior", () => {
       expect(result.details?.error).toBeUndefined();
     });
 
-    it("accepts clearing model even when notify is still true (no-op for inline)", async () => {
+    it("rejects empty-string model on update (must remove + re-add to clear)", async () => {
       const { tool } = buildTool([
         exampleJob({ id: "j4", model: "haiku", notify: true }),
       ]);
@@ -191,21 +191,67 @@ describe("schedule_prompt — notify behavior", () => {
         undefined,
         makeCtx(),
       );
-      expect(result.details?.error).toBeUndefined();
+      expect(result.details?.error).toContain("'model' must be a non-empty string");
     });
+  });
 
-    it("accepts clearing model when notify is also being cleared", async () => {
-      const { tool } = buildTool([
-        exampleJob({ id: "j5", model: "haiku", notify: true }),
-      ]);
+  describe("add — empty model rejection", () => {
+    it("rejects empty-string model on add", async () => {
+      const { tool } = buildTool();
       const result = await tool.execute(
         "call",
-        { action: "update", jobId: "j5", model: "", notify: false } as any,
+        {
+          action: "add",
+          schedule: "+10s",
+          type: "once",
+          prompt: "test",
+          model: "",
+        } as any,
         undefined,
         undefined,
         makeCtx(),
       );
-      expect(result.details?.error).toBeUndefined();
+      expect(result.details?.error).toContain("'model' must be a non-empty string");
     });
+  });
+});
+
+describe("schedule_prompt — update resolves relative time on schedule (T17)", () => {
+  it("accepts schedule='+5m' on update for a once job (resolves to ISO)", async () => {
+    const { tool, storage } = buildTool([
+      exampleJob({ id: "j6", type: "once", schedule: "2099-01-01T00:00:00.000Z" }),
+    ]);
+    const result = await tool.execute(
+      "call",
+      { action: "update", jobId: "j6", schedule: "+5m" } as any,
+      undefined,
+      undefined,
+      makeCtx(),
+    );
+    expect(result.details?.error).toBeUndefined();
+    // The stored schedule should now be an ISO timestamp ~5min from now,
+    // not the literal "+5m" string.
+    const updated = storage.getJob("j6") as any;
+    expect(updated.schedule).not.toBe("+5m");
+    const parsed = new Date(updated.schedule);
+    expect(Number.isNaN(parsed.getTime())).toBe(false);
+    const delta = parsed.getTime() - Date.now();
+    expect(delta).toBeGreaterThan(4 * 60 * 1000);
+    expect(delta).toBeLessThan(6 * 60 * 1000);
+  });
+
+  it("rejects schedule='+5m' on update for a cron job (relative time only valid for once)", async () => {
+    const { tool } = buildTool([
+      exampleJob({ id: "j7", type: "cron", schedule: "0 * * * * *" }),
+    ]);
+    const result = await tool.execute(
+      "call",
+      { action: "update", jobId: "j7", schedule: "+5m" } as any,
+      undefined,
+      undefined,
+      makeCtx(),
+    );
+    // For cron type the schedule must be a valid cron expression — `+5m` isn't.
+    expect(result.details?.error).toBeDefined();
   });
 });

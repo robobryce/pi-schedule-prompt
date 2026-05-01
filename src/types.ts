@@ -107,8 +107,9 @@ export const CronToolParams = Type.Object({
   ),
   model: Type.Optional(
     Type.String({
+      minLength: 1,
       description:
-        "Optional. If set, runs the prompt in a separate in-process agent session using this model (e.g. 'haiku', 'sonnet', or 'provider/model-id'). If omitted, the prompt is injected into the current chat.",
+        "Optional. If set, runs the prompt in a separate in-process agent session using this model (e.g. 'haiku', 'sonnet', or 'provider/model-id'). If omitted, the prompt is injected into the current chat. Must be a non-empty string — to switch a job from subagent back to inline mode, remove the job and re-add it without a model.",
     })
   ),
   notify: Type.Optional(

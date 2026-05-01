@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - `executeJob` branches on `job.model`: with no model, prompt is injected into the current chat (existing behavior); with a model, runs the prompt in a subagent. The marker is posted before `sendUserMessage` so it always lands above the prompt
+- `model` parameter must be a non-empty string (`minLength: 1` in the schema, plus runtime checks in `add` and `update`). To switch a job from subagent back to inline mode, remove and re-add it without `model` — there's no in-place clearing
 - Replaced "Toggle Widget Visibility" menu item with the new `Settings` submenu — the menu itself is the source of truth for current state, removing the need for a success toast
 - Schedule input (`/schedule-prompt → Add New Job`) is trimmed before validation, so pasted strings with surrounding whitespace validate cleanly
 - Package description updated to reference "Pi's Heartbeat"
@@ -37,6 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Subagent jobs no longer leave `lastStatus: "running"` if the post-completion marker `pi.sendMessage` throws: storage is advanced to the terminal status before the (best-effort) marker is posted, so a teardown-time failure can't crash the process or stick the job
 - Scheduled prompts no longer inject twice into the parent agent's context: the chat marker now carries empty `content` so it's purely a UI event — the renderer still draws it from `details`, and only `sendUserMessage` carries the prompt to the LLM. Previously the prompt text was in both, producing duplicate turns / "PROMPT\n\nPROMPT" rendering, especially when the agent was streaming at fire time
 - `notify: false` on subagent jobs is now genuinely silent: the done/error markers are posted with no delivery options (instead of `{deliverAs: "followUp", triggerTurn: false}`) so the parent agent isn't woken even when it was streaming at completion time — pi's `sendCustomMessage` would otherwise take the `followUp` branch and queue a turn regardless of `triggerTurn`. The renderer still surfaces the snippet/error from `details`. `notify: true` still uses `followUp` + `triggerTurn: true` and carries the result snippet in `content` so the parent can react to it
+- Stale `lastStatus: "running"` no longer persists across sessions: `CronScheduler.start()` clears the flag for any job that was interrupted mid-execution (subagent aborted by shutdown, process kill). Without this, the widget would render `⟳` for a job that isn't actually running until the cron next fired
+- Subagent error messages are now truncated to 500 chars with an ellipsis, matching the success-snippet behavior — verbose API errors / stack traces would otherwise overflow the chat row when the marker is rendered
+- `update` action now resolves relative-time schedules (`+5m`, `+10s`, etc.) the same way `add` does, so `update {schedule: "+5m"}` no longer fails with "Invalid timestamp: +5m". Same past-timestamp / too-soon guards as `add`
 
 ---
 

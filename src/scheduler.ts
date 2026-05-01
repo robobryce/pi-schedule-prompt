@@ -6,6 +6,13 @@ import type { CronChangeEvent, CronJob } from "./types.js";
 
 const SUBAGENT_OUTPUT_SNIPPET_LENGTH = 500;
 
+/** Truncate `text` to `SUBAGENT_OUTPUT_SNIPPET_LENGTH`, appending an ellipsis if cut. */
+function snippet(text: string): string {
+  return text.length > SUBAGENT_OUTPUT_SNIPPET_LENGTH
+    ? text.slice(0, SUBAGENT_OUTPUT_SNIPPET_LENGTH) + "…"
+    : text;
+}
+
 /**
  * Manages cron job scheduling and execution
  */
@@ -24,11 +31,21 @@ export class CronScheduler {
   }
 
   /**
-   * Start the scheduler with all enabled jobs
+   * Start the scheduler with all enabled jobs.
+   *
+   * Also clears any stale `lastStatus: "running"` from a prior session that was
+   * killed mid-execution (subagent aborted by shutdown, process kill, etc.). The
+   * field is informational — it tracks the *last completed* run — and would
+   * otherwise stick the widget on `⟳` until the cron next fires. We don't
+   * pretend the interrupted run "succeeded": we just drop the stale flag so the
+   * row reads as ready-to-run instead of stuck.
    */
   start(): void {
     const allJobs = this.storage.getAllJobs();
     for (const job of allJobs) {
+      if (job.lastStatus === "running") {
+        this.storage.updateJob(job.id, { lastStatus: undefined });
+      }
       if (job.enabled) {
         this.scheduleJob(job);
       }
@@ -292,9 +309,7 @@ export class CronScheduler {
         // to post the marker. The marker is best-effort (pi may be invalidated
         // during teardown) and must never leave the job stuck in "running".
         if (result.ok) {
-          const snippet = result.text.length > SUBAGENT_OUTPUT_SNIPPET_LENGTH
-            ? result.text.slice(0, SUBAGENT_OUTPUT_SNIPPET_LENGTH) + "…"
-            : result.text;
+          const outputSnippet = snippet(result.text);
           // Re-read runCount from storage; `job` here is the closure-captured
           // snapshot from scheduleJob and would yield a stale count.
           const latest = this.storage.getJob(job.id);
@@ -318,7 +333,7 @@ export class CronScheduler {
             this.pi.sendMessage(
               {
                 customType: "scheduled_prompt",
-                content: notify ? [{ type: "text", text: snippet }] : [],
+                content: notify ? [{ type: "text", text: outputSnippet }] : [],
                 display: true,
                 details: {
                   jobId: job.id,
@@ -326,7 +341,7 @@ export class CronScheduler {
                   prompt: job.prompt,
                   mode: "subagent_done",
                   model,
-                  output: snippet,
+                  output: outputSnippet,
                 },
               },
               notify ? { deliverAs: "followUp", triggerTurn: true } : undefined,
@@ -335,18 +350,21 @@ export class CronScheduler {
             console.error(`Failed to post subagent_done marker for job ${job.id}:`, markerErr);
           }
         } else {
+          // Truncate the error the same way as the success snippet — verbose
+          // API errors / stack traces would otherwise overflow the chat row.
+          const errorSnippet = snippet(result.error);
           this.storage.updateJob(job.id, {
             lastRun: new Date().toISOString(),
             lastStatus: "error",
             nextRun: nextRun?.toISOString(),
           });
-          this.emitChange({ type: "error", jobId: job.id, error: result.error });
+          this.emitChange({ type: "error", jobId: job.id, error: errorSnippet });
           try {
             // Same notify branching as the done marker — see comment above.
             this.pi.sendMessage(
               {
                 customType: "scheduled_prompt",
-                content: notify ? [{ type: "text", text: result.error }] : [],
+                content: notify ? [{ type: "text", text: errorSnippet }] : [],
                 display: true,
                 details: {
                   jobId: job.id,
@@ -354,7 +372,7 @@ export class CronScheduler {
                   prompt: job.prompt,
                   mode: "subagent_error",
                   model,
-                  error: result.error,
+                  error: errorSnippet,
                 },
               },
               notify ? { deliverAs: "followUp", triggerTurn: true } : undefined,
