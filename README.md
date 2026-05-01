@@ -25,6 +25,7 @@ Schedule future prompts with natural language:
 - **Job types**: 
   - **Recurring** (cron/interval) — repeats automatically
   - **One-shot** (once) — runs once then auto-disables
+- **Per-task model (optional)**: set `model` on a job to run that prompt in a separate in-process agent session — your current chat is not affected
 - **Actions**: add, remove, list, enable, disable, update, cleanup
 - **Auto-cleanup**: Removes disabled jobs on session exit
 
@@ -195,6 +196,24 @@ The tool accepts multiple time formats:
   → schedule="5m", type=interval
 ```
 
+### Run in a separate agent session (per-task model)
+
+By default a scheduled prompt is injected into your current chat. Set `model` on the job to run it in a fresh in-process agent session instead — your current chat keeps its own model and context untouched.
+
+```
+"every morning at 9, summarise yesterday's logs using haiku"
+  → schedule="0 0 9 * * *", type=cron, model="haiku", prompt="summarise yesterday's logs"
+
+"in 30s reply with OK using sonnet"
+  → schedule="+30s", type=once, model="sonnet", prompt="Reply with OK"
+```
+
+`model` is permissive: pass a fuzzy name (`haiku`, `sonnet`) or fully qualified `provider/model-id`. The first match in the available model registry is used. When the job fires you'll see a `🕐 Scheduled (subagent: <model>)` marker in chat, followed by a `✓ finished` (or `✗ failed`) marker with the response snippet once the subagent completes.
+
+By default the result is shown in chat but the parent agent is **not** woken up — you read it, the agent isn't interrupted. Set `notify: true` on the job if you want the parent to react to each completion (e.g. for autonomous workflows). Recommended only for low-frequency jobs; a `notify: true` recurring job that fires every 5 minutes will trigger a parent-agent turn every 5 minutes.
+
+> **Heads up:** Subagent jobs run unattended at fire time with the full default tool set (`bash`, `read`, `edit`, `write`, …) under your credentials. Treat persisted jobs in `.pi/schedule-prompts.json` as you would any auto-executed task — review prompts before adding, especially anything that mutates files or shells out.
+
 ## Development
 
 **TypeScript check:**
@@ -214,6 +233,7 @@ src/
   types.ts          # CronJob, CronJobType, CronToolParams
   storage.ts        # File-based persistence (.pi/schedule-prompts.json)
   scheduler.ts      # Core scheduling engine with croner
+  subagent.ts       # Lightweight in-process agent runner (per-task model)
   tool.ts           # schedule_prompt tool definition
   ui/
     cron-widget.ts  # Live status widget below editor

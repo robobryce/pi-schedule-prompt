@@ -276,9 +276,16 @@ export class CronWidget {
       // Run count (pad to 3 chars for alignment)
       const countText = theme.fg("accent", job.runCount.toString().padEnd(3));
 
+      // Model badge (only for jobs that run in a subagent).
+      // Trailing "!" marks jobs that wake the parent agent on completion (notify=true).
+      const modelBadge = job.model
+        ? " " + theme.fg("accent",
+            `[${job.model.length > 12 ? job.model.substring(0, 9) + "..." : job.model}${job.notify ? "!" : ""}]`)
+        : "";
+
       // Combine into a row with proper spacing
       lines.push(
-        ` ${statusIcon} ${nameText} ${scheduleText} ${promptText} ${nextText} ${lastText} ${countText}`
+        ` ${statusIcon} ${nameText} ${scheduleText} ${promptText} ${nextText} ${lastText} ${countText}${modelBadge}`
       );
     }
 

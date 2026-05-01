@@ -1,7 +1,10 @@
 import { Cron } from "croner";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type { CronJob, CronChangeEvent } from "./types.js";
 import type { CronStorage } from "./storage.js";
+import { runSubagentOnce } from "./subagent.js";
+
+const SUBAGENT_OUTPUT_SNIPPET_LENGTH = 500;
 
 /**
  * Manages cron job scheduling and execution
@@ -9,12 +12,15 @@ import type { CronStorage } from "./storage.js";
 export class CronScheduler {
   private jobs = new Map<string, Cron>();
   private intervals = new Map<string, NodeJS.Timeout>();
+  private activeSubagents = new Set<AbortController>();
   private readonly storage: CronStorage;
   private readonly pi: ExtensionAPI;
+  private readonly ctx: ExtensionContext;
 
-  constructor(storage: CronStorage, pi: ExtensionAPI) {
+  constructor(storage: CronStorage, pi: ExtensionAPI, ctx: ExtensionContext) {
     this.storage = storage;
     this.pi = pi;
+    this.ctx = ctx;
   }
 
   /**
@@ -44,6 +50,13 @@ export class CronScheduler {
       clearInterval(interval);
     }
     this.intervals.clear();
+
+    // Abort any in-flight subagent runs so they don't keep streaming or post
+    // markers against a stale pi reference after session shutdown.
+    for (const controller of this.activeSubagents) {
+      controller.abort();
+    }
+    this.activeSubagents.clear();
   }
 
   /**
@@ -166,6 +179,11 @@ export class CronScheduler {
   private async executeJob(job: CronJob): Promise<void> {
     console.log(`Executing scheduled prompt: ${job.name} (${job.id})`);
 
+    if (job.model) {
+      this.executeJobInSubagent(job);
+      return;
+    }
+
     try {
       // Update status to running
       this.storage.updateJob(job.id, {
@@ -208,6 +226,100 @@ export class CronScheduler {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  /**
+   * Run a job's prompt in a fresh in-process AgentSession with the chosen model.
+   * Fire-and-forget: the cron tick returns immediately so other jobs keep firing.
+   */
+  private executeJobInSubagent(job: CronJob): void {
+    const model = job.model!;
+    const notify = job.notify === true;
+    this.storage.updateJob(job.id, { lastStatus: "running" });
+    this.emitChange({ type: "fire", job });
+
+    this.pi.sendMessage({
+      customType: "scheduled_prompt",
+      content: [{ type: "text", text: job.prompt }],
+      display: true,
+      details: {
+        jobId: job.id,
+        jobName: job.name,
+        prompt: job.prompt,
+        mode: "subagent_start",
+        model,
+      },
+    }, { deliverAs: "followUp" });
+
+    const controller = new AbortController();
+    this.activeSubagents.add(controller);
+
+    void (async () => {
+      try {
+        let result;
+        try {
+          result = await runSubagentOnce(this.ctx, job.prompt, model, controller.signal);
+        } finally {
+          this.activeSubagents.delete(controller);
+        }
+
+        // Scheduler was stopped (session shutdown / switch / fork) while we were
+        // running. Don't touch storage or post markers — pi may be invalidated.
+        if (controller.signal.aborted) return;
+
+        const nextRun = this.getNextRun(job.id);
+
+        if (result.ok) {
+          const snippet = result.text.length > SUBAGENT_OUTPUT_SNIPPET_LENGTH
+            ? result.text.slice(0, SUBAGENT_OUTPUT_SNIPPET_LENGTH) + "…"
+            : result.text;
+          this.pi.sendMessage({
+            customType: "scheduled_prompt",
+            content: [{ type: "text", text: snippet }],
+            display: true,
+            details: {
+              jobId: job.id,
+              jobName: job.name,
+              prompt: job.prompt,
+              mode: "subagent_done",
+              model,
+              output: snippet,
+            },
+          }, { deliverAs: "followUp", triggerTurn: notify });
+          this.storage.updateJob(job.id, {
+            lastRun: new Date().toISOString(),
+            lastStatus: "success",
+            runCount: job.runCount + 1,
+            nextRun: nextRun?.toISOString(),
+          });
+          this.emitChange({ type: "fire", job });
+        } else {
+          this.pi.sendMessage({
+            customType: "scheduled_prompt",
+            content: [{ type: "text", text: result.error }],
+            display: true,
+            details: {
+              jobId: job.id,
+              jobName: job.name,
+              prompt: job.prompt,
+              mode: "subagent_error",
+              model,
+              error: result.error,
+            },
+          }, { deliverAs: "followUp", triggerTurn: notify });
+          this.storage.updateJob(job.id, {
+            lastRun: new Date().toISOString(),
+            lastStatus: "error",
+            nextRun: nextRun?.toISOString(),
+          });
+          this.emitChange({ type: "error", jobId: job.id, error: result.error });
+        }
+      } catch (error) {
+        // Catch-all guard: pi may be invalidated during teardown, sendMessage
+        // may throw, etc. Don't let an unhandled rejection escape the IIFE.
+        console.error(`Subagent completion handler failed for job ${job.id}:`, error);
+      }
+    })();
   }
 
   /**

@@ -26,16 +26,46 @@ export default async function (pi: ExtensionAPI) {
 
   // Register custom message renderer for scheduled prompts
   pi.registerMessageRenderer("scheduled_prompt", (message, _options, theme) => {
-    const details = message.details as { jobId: string; jobName: string; prompt: string } | undefined;
+    const details = message.details as
+      | {
+          jobId: string;
+          jobName: string;
+          prompt: string;
+          mode?: "subagent_start" | "subagent_done" | "subagent_error";
+          model?: string;
+          output?: string;
+          error?: string;
+        }
+      | undefined;
     const jobName = details?.jobName || "Unknown";
     const prompt = details?.prompt || "";
-    
-    return new Text(
-      theme.fg("accent", `🕐 Scheduled: ${jobName}`) + 
-      (prompt ? theme.fg("dim", ` → "${prompt}"`) : ""),
-      0,
-      0
-    );
+    const model = details?.model;
+    const tag = model ? ` (subagent: ${model})` : "";
+
+    let line: string;
+    switch (details?.mode) {
+      case "subagent_start":
+        line =
+          theme.fg("accent", `🕐 Scheduled${tag}: ${jobName}`) +
+          (prompt ? theme.fg("dim", ` → "${prompt}"`) : "");
+        break;
+      case "subagent_done":
+        line =
+          theme.fg("accent", `✓ Scheduled${tag} finished: ${jobName}`) +
+          (details?.output ? theme.fg("dim", ` → ${details.output}`) : "");
+        break;
+      case "subagent_error":
+        line =
+          theme.fg("error", `✗ Scheduled${tag} failed: ${jobName}`) +
+          (details?.error ? theme.fg("dim", ` → ${details.error}`) : "");
+        break;
+      default:
+        line =
+          theme.fg("accent", `🕐 Scheduled: ${jobName}`) +
+          (prompt ? theme.fg("dim", ` → "${prompt}"`) : "");
+    }
+
+    return new Text(line, 0, 0);
   });
 
   // Register the tool once with getter functions
@@ -50,7 +80,7 @@ export default async function (pi: ExtensionAPI) {
   const initializeSession = (ctx: any) => {
     // Create storage and scheduler
     storage = new CronStorage(ctx.cwd);
-    scheduler = new CronScheduler(storage, pi);
+    scheduler = new CronScheduler(storage, pi, ctx);
     widget = new CronWidget(storage, scheduler, pi, () => widgetVisible);
 
     // Load and start all enabled jobs

@@ -42,6 +42,10 @@ export interface CronJob {
   runCount: number;
   /** Optional description */
   description?: string;
+  /** If set, run the prompt in a separate in-process agent session using this model instead of injecting into the current chat. */
+  model?: string;
+  /** Subagent jobs only. If true, the parent agent is woken up to react to the subagent's result. Default false (result lands in chat silently). */
+  notify?: boolean;
 }
 
 /**
@@ -99,6 +103,18 @@ export const CronToolParams = Type.Object({
   description: Type.Optional(
     Type.String({
       description: "Optional job description",
+    })
+  ),
+  model: Type.Optional(
+    Type.String({
+      description:
+        "Optional. If set, runs the prompt in a separate in-process agent session using this model (e.g. 'haiku', 'sonnet', or 'provider/model-id'). If omitted, the prompt is injected into the current chat.",
+    })
+  ),
+  notify: Type.Optional(
+    Type.Boolean({
+      description:
+        "Subagent jobs only — requires 'model'. Add/update will reject notify=true without a model. If true, the parent agent is nudged to react to the subagent's result. Default false: the result is shown in chat but the parent is not interrupted. Recommended only for low-frequency jobs.",
     })
   ),
 });
