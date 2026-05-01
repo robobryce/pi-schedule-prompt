@@ -10,13 +10,12 @@
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Key } from "@mariozechner/pi-tui";
-import { Container, Text } from "@mariozechner/pi-tui";
-import { CronStorage } from "./storage.js";
+import { Text } from "@mariozechner/pi-tui";
+import { nanoid } from "nanoid";
 import { CronScheduler } from "./scheduler.js";
+import { CronStorage } from "./storage.js";
 import { createCronTool } from "./tool.js";
 import { CronWidget } from "./ui/cron-widget.js";
-import { nanoid } from "nanoid";
 
 export default async function (pi: ExtensionAPI) {
   let storage: CronStorage;
@@ -242,7 +241,7 @@ export default async function (pi: ExtensionAPI) {
               }
             } else if (jobType === "once") {
               const date = new Date(schedule);
-              if (isNaN(date.getTime())) {
+              if (Number.isNaN(date.getTime())) {
                 ctx.ui.notify("Invalid timestamp format", "error");
                 return;
               }

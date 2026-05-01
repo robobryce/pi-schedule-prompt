@@ -9,6 +9,7 @@ vi.mock("../src/subagent.js", () => ({
 }));
 
 import { runSubagentOnce } from "../src/subagent.js";
+
 const mockRunSubagentOnce = vi.mocked(runSubagentOnce);
 
 // In-memory CronStorage stand-in.

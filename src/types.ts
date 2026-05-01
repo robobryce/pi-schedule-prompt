@@ -1,6 +1,6 @@
+import { StringEnum } from "@mariozechner/pi-ai";
 import type { Static } from "@sinclair/typebox";
 import { Type } from "@sinclair/typebox";
-import { StringEnum } from "@mariozechner/pi-ai";
 
 /**
  * Type of cron job

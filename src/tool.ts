@@ -1,10 +1,10 @@
-import type { ToolDefinition, Theme } from "@mariozechner/pi-coding-agent";
+import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { nanoid } from "nanoid";
-import type { CronToolParamsType, CronToolDetails, CronJob, CronJobType } from "./types.js";
-import { CronToolParams } from "./types.js";
-import type { CronStorage } from "./storage.js";
 import { CronScheduler } from "./scheduler.js";
+import type { CronStorage } from "./storage.js";
+import type { CronJob, CronJobType, CronToolDetails, } from "./types.js";
+import { CronToolParams } from "./types.js";
 
 /**
  * Create the schedule_prompt tool definition
@@ -94,7 +94,7 @@ export function createCronTool(
               } else {
                 // Try parsing as ISO timestamp
                 const date = new Date(params.schedule);
-                if (isNaN(date.getTime())) {
+                if (Number.isNaN(date.getTime())) {
                   throw new Error(
                     `Invalid timestamp: ${params.schedule}. Use ISO format or relative time like '+10s', '+5m'`
                   );
@@ -295,7 +295,7 @@ export function createCronTool(
                 updates.intervalMs = intervalMs;
               } else if (type === "once") {
                 const date = new Date(params.schedule);
-                if (isNaN(date.getTime())) {
+                if (Number.isNaN(date.getTime())) {
                   throw new Error(`Invalid timestamp: ${params.schedule}`);
                 }
                 updates.schedule = date.toISOString();

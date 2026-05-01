@@ -1,8 +1,8 @@
-import { Cron } from "croner";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import type { CronJob, CronChangeEvent } from "./types.js";
+import { Cron } from "croner";
 import type { CronStorage } from "./storage.js";
-import { runSubagentOnce } from "./subagent.js";
+import { runSubagentOnce, type SubagentResult } from "./subagent.js";
+import type { CronChangeEvent, CronJob } from "./types.js";
 
 const SUBAGENT_OUTPUT_SNIPPET_LENGTH = 500;
 
@@ -256,7 +256,7 @@ export class CronScheduler {
 
     void (async () => {
       try {
-        let result;
+        let result: SubagentResult;
         try {
           result = await runSubagentOnce(this.ctx, job.prompt, model, controller.signal);
         } finally {

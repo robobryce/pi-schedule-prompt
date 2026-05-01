@@ -7,10 +7,9 @@
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { DynamicBorder } from "@mariozechner/pi-coding-agent";
-import { Container, Text, Spacer } from "@mariozechner/pi-tui";
-import type { CronStorage } from "../storage.js";
+import { Container, Spacer, Text } from "@mariozechner/pi-tui";
 import type { CronScheduler } from "../scheduler.js";
-import type { CronJob } from "../types.js";
+import type { CronStorage } from "../storage.js";
 
 const WIDGET_ID = "schedule-prompts";
 
@@ -18,7 +17,7 @@ const WIDGET_ID = "schedule-prompts";
  * Format relative time (e.g., "in 5m", "2h ago")
  */
 function formatRelativeTime(date: Date | string): string {
-  const now = new Date().getTime();
+  const now = Date.now();
   const target = typeof date === "string" ? new Date(date).getTime() : date.getTime();
   const diff = target - now;
   const absDiff = Math.abs(diff);
@@ -86,7 +85,7 @@ function humanizeCron(expression: string): string {
   // Specific time pattern (0 0 HH * * *)
   const timeMatch = normalized.match(/^0 0 (\d+) \* \* \*$/);
   if (timeMatch) {
-    const hour = parseInt(timeMatch[1]);
+    const hour = parseInt(timeMatch[1], 10);
     return `daily at ${hour}:00`;
   }
 
@@ -150,7 +149,7 @@ export class CronWidget {
 
     ctx.ui.setWidget(
       WIDGET_ID,
-      (tui: any, theme: any) => {
+      (_tui: any, theme: any) => {
         const component = {
           render: (width: number) => this.renderWidget(width, theme),
           invalidate: () => {
