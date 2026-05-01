@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Optional `model` field on scheduled jobs (closes #4, #7): when set, the prompt runs in a fresh in-process `AgentSession` with the chosen model instead of being injected into the current chat. The current chat keeps its own model and context untouched. Permissive resolution: `"haiku"`, `"sonnet"`, or `"provider/model-id"` — first match in the available registry wins
-- Optional `notify` flag (subagent jobs only): when `true`, the subagent's result is delivered to the parent agent as a follow-up that triggers a new turn. Default is silent; the tool rejects `notify: true` without `model` with a clear error
+- Optional `notify` flag (subagent jobs only): when `true`, the subagent's result is delivered to the parent agent as a follow-up that triggers a new turn. Default is silent. No-op for inline (no-model) jobs — the prompt itself already wakes the parent — and accepted without rejection so existing inline jobs aren't broken by stray `notify` values
 - Subagent lifecycle markers in the chat: `subagent_start`, `subagent_done` (with a 500-char output snippet), and `subagent_error` — rendered with a `(subagent: <model>)` tag
 - Widget badges for subagent jobs: `[<model>]` per row, with a trailing `!` when `notify=true`
 - Active subagents are tracked per `AbortController` and aborted when the scheduler stops (session shutdown / switch / fork), preventing late completions and unhandled rejections
@@ -35,6 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Scheduler no longer leaks croner timers across `session_start` (which fires on reload/resume/fork too): `initializeSession` is now idempotent and tears down any prior scheduler/widget before creating new ones, eliminating duplicate fires of recurring jobs in long-lived sessions (#3)
 - `runCount` now advances on every fire: `executeJob` re-reads the job from storage instead of using the closure-captured snapshot, which previously kept writing the same stale `snapshot + 1` value (#3). Same fix applied to the subagent execution path (#7)
 - Subagent jobs no longer leave `lastStatus: "running"` if the post-completion marker `pi.sendMessage` throws: storage is advanced to the terminal status before the (best-effort) marker is posted, so a teardown-time failure can't crash the process or stick the job
+- Scheduled prompts no longer inject twice into the parent agent's context: the chat marker now carries empty `content` so it's purely a UI event — the renderer still draws it from `details`, and only `sendUserMessage` carries the prompt to the LLM. Previously the prompt text was in both, producing duplicate turns / "PROMPT\n\nPROMPT" rendering, especially when the agent was streaming at fire time
+- `notify: false` on subagent jobs is now genuinely silent: the done/error markers are posted with no delivery options (instead of `{deliverAs: "followUp", triggerTurn: false}`) so the parent agent isn't woken even when it was streaming at completion time — pi's `sendCustomMessage` would otherwise take the `followUp` branch and queue a turn regardless of `triggerTurn`. The renderer still surfaces the snippet/error from `details`. `notify: true` still uses `followUp` + `triggerTurn: true` and carries the result snippet in `content` so the parent can react to it
 
 ---
 

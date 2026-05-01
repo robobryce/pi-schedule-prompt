@@ -1,6 +1,6 @@
 import { StringEnum } from "@mariozechner/pi-ai";
-import type { Static } from "@sinclair/typebox";
-import { Type } from "@sinclair/typebox";
+import type { Static } from "typebox";
+import { Type } from "typebox";
 
 /**
  * Type of cron job
@@ -114,7 +114,7 @@ export const CronToolParams = Type.Object({
   notify: Type.Optional(
     Type.Boolean({
       description:
-        "Subagent jobs only — requires 'model'. Add/update will reject notify=true without a model. If true, the parent agent is nudged to react to the subagent's result. Default false: the result is shown in chat but the parent is not interrupted. Recommended only for low-frequency jobs.",
+        "Subagent jobs only. If true, the parent agent is nudged to react to the subagent's result. Default false: the result is shown in chat but the parent is not interrupted. Ignored for inline (no-model) jobs, where the prompt itself already wakes the parent. Recommended only for low-frequency jobs.",
     })
   ),
 });

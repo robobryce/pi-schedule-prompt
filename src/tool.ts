@@ -57,12 +57,6 @@ export function createCronTool(
               );
             }
 
-            if (params.notify && !params.model) {
-              throw new Error(
-                "'notify' requires 'model' to be set — notify only applies to subagent jobs. Either provide a 'model' or remove 'notify'."
-              );
-            }
-
             // Generate name if not provided
             const jobName = params.name || `job-${nanoid(6)}`;
 
@@ -263,16 +257,6 @@ export function createCronTool(
             const job = storage.getJob(params.jobId);
             if (!job) {
               throw new Error(`Job not found: ${params.jobId}`);
-            }
-
-            // Compute the effective model + notify after this update would apply.
-            // Reject the combination if it would leave notify=true on an inline (no-model) job.
-            const effectiveModel = params.model !== undefined ? params.model : job.model;
-            const effectiveNotify = params.notify !== undefined ? params.notify : job.notify;
-            if (effectiveNotify && !effectiveModel) {
-              throw new Error(
-                "'notify' requires 'model' to be set — notify only applies to subagent jobs. Either set a 'model' or pass 'notify: false'."
-              );
             }
 
             const updates: Partial<CronJob> = {};

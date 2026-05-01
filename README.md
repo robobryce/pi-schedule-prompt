@@ -116,7 +116,7 @@ The widget displays below your editor (only when jobs exist):
 | `type` | `cron` \| `once` \| `interval` | no | Job type. Default `cron`; use `once` for relative times like `+10s` |
 | `description` | string | no | Free-form note |
 | `model` | string | no | If set, run the prompt in a fresh in-process agent session with this model instead of injecting into the current chat. Accepts fuzzy names (`haiku`, `sonnet`) or `provider/model-id` |
-| `notify` | boolean | no | Subagent-only — requires `model`. If `true`, the parent agent is woken to react to the result. Default `false` (result shown in chat, parent not interrupted). Recommended only for low-frequency jobs |
+| `notify` | boolean | no | Subagent-only. If `true`, the parent agent is woken to react to the subagent's result. Default `false` (result shown in chat, parent not interrupted). No-op for inline (no-model) jobs — the prompt itself already wakes the parent. Recommended only for low-frequency jobs |
 
 ### Schedule Formats
 

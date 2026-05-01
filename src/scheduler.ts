@@ -191,17 +191,22 @@ export class CronScheduler {
       });
       this.emitChange({ type: "fire", job });
 
-      // Send a visible marker message for the scheduled prompt
-      this.pi.sendMessage(
-        {
-          customType: "scheduled_prompt",
-          content: [{ type: "text", text: job.prompt }],
-          display: true,
-          details: { jobId: job.id, jobName: job.name, prompt: job.prompt },
-        }
-      );
+      // Visible-only marker. The renderer reads from `details`, so `content`
+      // is intentionally empty — putting the prompt text in `content` would
+      // inject it into the LLM context a second time alongside the
+      // `sendUserMessage` delivery below, producing duplicate turns /
+      // "PROMPT\n\nPROMPT" rendering when the agent was streaming at fire
+      // time. No options means: idle → silent append + emit (marker shows
+      // before the user message in the chat), streaming → `agent.steer` with
+      // empty content (no LLM context change, no extra turn triggered).
+      this.pi.sendMessage({
+        customType: "scheduled_prompt",
+        content: [],
+        display: true,
+        details: { jobId: job.id, jobName: job.name, prompt: job.prompt },
+      });
 
-      // Then send the actual prompt to the agent
+      // Then send the actual prompt to the agent — this is the single LLM-visible delivery.
       this.pi.sendUserMessage(job.prompt, { deliverAs: "followUp" });
 
       // Update job execution stats.
@@ -246,9 +251,15 @@ export class CronScheduler {
     this.storage.updateJob(job.id, { lastStatus: "running" });
     this.emitChange({ type: "fire", job });
 
+    // Start marker is purely visual. Empty `content` keeps it out of the
+    // parent's LLM context (the subagent has the prompt directly). No options
+    // means: idle → silent append + emit (immediately visible), streaming →
+    // `agent.steer` (inserts into the current turn's loop, no new turn). With
+    // empty content the steered message contributes nothing to the LLM, so
+    // neither path triggers a parent reply.
     this.pi.sendMessage({
       customType: "scheduled_prompt",
-      content: [{ type: "text", text: job.prompt }],
+      content: [],
       display: true,
       details: {
         jobId: job.id,
@@ -257,7 +268,7 @@ export class CronScheduler {
         mode: "subagent_start",
         model,
       },
-    }, { deliverAs: "followUp" });
+    });
 
     const controller = new AbortController();
     this.activeSubagents.add(controller);
@@ -296,19 +307,30 @@ export class CronScheduler {
           });
           this.emitChange({ type: "fire", job });
           try {
-            this.pi.sendMessage({
-              customType: "scheduled_prompt",
-              content: [{ type: "text", text: snippet }],
-              display: true,
-              details: {
-                jobId: job.id,
-                jobName: job.name,
-                prompt: job.prompt,
-                mode: "subagent_done",
-                model,
-                output: snippet,
+            // notify=true: snippet in `content` + followUp/triggerTurn wakes
+            // the parent — it sees the result and reacts.
+            // notify=false: empty content + no options — renderer still draws
+            // the snippet from `details.output`, but the marker is silent
+            // (idle: append+emit, streaming: steer with empty content). The
+            // previous `{deliverAs: "followUp", triggerTurn: false}` was the
+            // bug: during a streaming parent response, the followUp branch
+            // ignores triggerTurn and still queues a new turn after the stream.
+            this.pi.sendMessage(
+              {
+                customType: "scheduled_prompt",
+                content: notify ? [{ type: "text", text: snippet }] : [],
+                display: true,
+                details: {
+                  jobId: job.id,
+                  jobName: job.name,
+                  prompt: job.prompt,
+                  mode: "subagent_done",
+                  model,
+                  output: snippet,
+                },
               },
-            }, { deliverAs: "followUp", triggerTurn: notify });
+              notify ? { deliverAs: "followUp", triggerTurn: true } : undefined,
+            );
           } catch (markerErr) {
             console.error(`Failed to post subagent_done marker for job ${job.id}:`, markerErr);
           }
@@ -320,19 +342,23 @@ export class CronScheduler {
           });
           this.emitChange({ type: "error", jobId: job.id, error: result.error });
           try {
-            this.pi.sendMessage({
-              customType: "scheduled_prompt",
-              content: [{ type: "text", text: result.error }],
-              display: true,
-              details: {
-                jobId: job.id,
-                jobName: job.name,
-                prompt: job.prompt,
-                mode: "subagent_error",
-                model,
-                error: result.error,
+            // Same notify branching as the done marker — see comment above.
+            this.pi.sendMessage(
+              {
+                customType: "scheduled_prompt",
+                content: notify ? [{ type: "text", text: result.error }] : [],
+                display: true,
+                details: {
+                  jobId: job.id,
+                  jobName: job.name,
+                  prompt: job.prompt,
+                  mode: "subagent_error",
+                  model,
+                  error: result.error,
+                },
               },
-            }, { deliverAs: "followUp", triggerTurn: notify });
+              notify ? { deliverAs: "followUp", triggerTurn: true } : undefined,
+            );
           } catch (markerErr) {
             console.error(`Failed to post subagent_error marker for job ${job.id}:`, markerErr);
           }

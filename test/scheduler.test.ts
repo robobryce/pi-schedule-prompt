@@ -64,7 +64,7 @@ describe("CronScheduler — subagent path marker delivery", () => {
     mockRunSubagentOnce.mockReset();
   });
 
-  it("posts a subagent_start marker with deliverAs=followUp and no triggerTurn", async () => {
+  it("posts a silent subagent_start marker (no options, empty content)", async () => {
     mockRunSubagentOnce.mockResolvedValue({ ok: true, text: "result text" });
     const pi = makePi();
     const job = exampleJob({ model: "haiku" });
@@ -77,12 +77,15 @@ describe("CronScheduler — subagent path marker delivery", () => {
     const [startMsg, startOpts] = pi.sendMessage.mock.calls[0];
     expect(startMsg.details.mode).toBe("subagent_start");
     expect(startMsg.details.model).toBe("haiku");
-    expect(startOpts).toEqual({ deliverAs: "followUp" });
-    // start should never trigger a parent turn — it's just a "running" notification.
-    expect(startOpts.triggerTurn).toBeUndefined();
+    // Empty content keeps the prompt out of the parent's LLM context (the
+    // subagent already has it). No options → idle: silent append + emit
+    // (immediately visible in chat); streaming: `agent.steer` with empty
+    // content (LLM-invisible, no extra turn triggered).
+    expect(startMsg.content).toEqual([]);
+    expect(startOpts).toBeUndefined();
   });
 
-  it("posts a subagent_done marker with triggerTurn=false when notify is unset", async () => {
+  it("posts a silent subagent_done marker when notify is unset (no options, empty content)", async () => {
     mockRunSubagentOnce.mockResolvedValue({ ok: true, text: "OK" });
     const pi = makePi();
     const job = exampleJob({ model: "haiku" });
@@ -94,10 +97,17 @@ describe("CronScheduler — subagent path marker delivery", () => {
     const [doneMsg, doneOpts] = pi.sendMessage.mock.calls[1];
     expect(doneMsg.details.mode).toBe("subagent_done");
     expect(doneMsg.details.output).toBe("OK");
-    expect(doneOpts).toEqual({ deliverAs: "followUp", triggerTurn: false });
+    // notify=false: snippet stays in `details` for the renderer, but content
+    // is empty and no options are passed so the parent agent isn't woken.
+    // Regression guard for "notify=false still wakes parent" — the previous
+    // `{deliverAs: "followUp", triggerTurn: false}` would still queue a
+    // follow-up turn when the parent was streaming (the followUp branch in
+    // sendCustomMessage takes precedence over the triggerTurn check).
+    expect(doneMsg.content).toEqual([]);
+    expect(doneOpts).toBeUndefined();
   });
 
-  it("posts a subagent_done marker with triggerTurn=true when notify is true", async () => {
+  it("posts a wake-up subagent_done marker when notify is true (followUp + triggerTurn, snippet in content)", async () => {
     mockRunSubagentOnce.mockResolvedValue({ ok: true, text: "OK" });
     const pi = makePi();
     const job = exampleJob({ model: "haiku", notify: true });
@@ -106,11 +116,12 @@ describe("CronScheduler — subagent path marker delivery", () => {
     (scheduler as any).executeJobInSubagent(job);
     await vi.waitFor(() => expect(pi.sendMessage).toHaveBeenCalledTimes(2));
 
-    const [, doneOpts] = pi.sendMessage.mock.calls[1];
+    const [doneMsg, doneOpts] = pi.sendMessage.mock.calls[1];
+    expect(doneMsg.content).toEqual([{ type: "text", text: "OK" }]);
     expect(doneOpts).toEqual({ deliverAs: "followUp", triggerTurn: true });
   });
 
-  it("posts a subagent_error marker with triggerTurn gated by notify", async () => {
+  it("posts a subagent_error marker with notify-gated wake-up", async () => {
     mockRunSubagentOnce.mockResolvedValue({ ok: false, error: "model exploded" });
     const pi = makePi();
     const job = exampleJob({ model: "haiku", notify: true });
@@ -122,6 +133,7 @@ describe("CronScheduler — subagent path marker delivery", () => {
     const [errMsg, errOpts] = pi.sendMessage.mock.calls[1];
     expect(errMsg.details.mode).toBe("subagent_error");
     expect(errMsg.details.error).toBe("model exploded");
+    expect(errMsg.content).toEqual([{ type: "text", text: "model exploded" }]);
     expect(errOpts).toEqual({ deliverAs: "followUp", triggerTurn: true });
   });
 
@@ -292,5 +304,28 @@ describe("CronScheduler — inline path is unaffected by mock", () => {
       "do the thing",
       { deliverAs: "followUp" },
     );
+  });
+
+  it("inline marker uses empty content and no delivery options (regression guard for double-injection)", async () => {
+    const pi = makePi();
+    const job = exampleJob(); // no model
+    const scheduler = new CronScheduler(makeStorage([job]), pi, makeCtx());
+
+    await (scheduler as any).executeJob(job);
+
+    // The marker must NOT carry the prompt in `content` — that would inject
+    // the prompt into the LLM context a second time alongside `sendUserMessage`,
+    // producing the "PROMPT\n\nPROMPT" / duplicate-turn symptom. No options
+    // means: idle → silent append + emit (marker shows before the user
+    // message); streaming → `agent.steer` with empty content (no LLM
+    // context change, no extra turn triggered).
+    const [markerMsg, markerOpts] = pi.sendMessage.mock.calls[0];
+    expect(markerMsg.content).toEqual([]);
+    expect(markerMsg.details).toEqual({
+      jobId: job.id,
+      jobName: job.name,
+      prompt: job.prompt,
+    });
+    expect(markerOpts).toBeUndefined();
   });
 });

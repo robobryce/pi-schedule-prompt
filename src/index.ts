@@ -129,16 +129,10 @@ export default async function (pi: ExtensionAPI) {
 
   // --- Lifecycle events ---
 
-  // `session_start` fires with reason ∈ {startup, reload, new, resume, fork},
-  // so it covers all the cases where state needs to be (re)initialised. The
-  // idempotent `initializeSession` above tears down the prior scheduler before
-  // creating a new one, so we no longer need separate switch/fork handlers —
-  // and their previous event names (`session_switch`, `session_fork`) were
-  // typos in the first place: the real pi events are `session_before_switch`
-  // and `session_before_fork`, which fire *before* the switch completes and
-  // are therefore not the right point to reinitialise anyway.
-
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", async (event, ctx) => {
+    if (event.reason !== "startup") {
+      autoCleanupDisabledJobs();
+    }
     initializeSession(ctx);
   });
 

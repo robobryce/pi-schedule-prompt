@@ -62,9 +62,9 @@ function exampleJob(overrides: Partial<CronJob> = {}): CronJob {
   };
 }
 
-describe("schedule_prompt — notify validation", () => {
+describe("schedule_prompt — notify behavior", () => {
   describe("add", () => {
-    it("rejects notify=true without model", async () => {
+    it("accepts notify=true without model (no-op for inline jobs)", async () => {
       const { tool } = buildTool();
       const result = await tool.execute(
         "call",
@@ -79,7 +79,9 @@ describe("schedule_prompt — notify validation", () => {
         undefined,
         makeCtx(),
       );
-      expect(result.details?.error).toContain("'notify' requires 'model'");
+      expect(result.details?.error).toBeUndefined();
+      expect(result.details?.jobs?.[0].notify).toBe(true);
+      expect(result.details?.jobs?.[0].model).toBeUndefined();
     });
 
     it("accepts notify=true with model", async () => {
@@ -103,7 +105,7 @@ describe("schedule_prompt — notify validation", () => {
       expect(result.details?.jobs?.[0].notify).toBe(true);
     });
 
-    it("accepts notify=false without model (no constraint)", async () => {
+    it("accepts notify=false without model", async () => {
       const { tool } = buildTool();
       const result = await tool.execute(
         "call",
@@ -142,7 +144,7 @@ describe("schedule_prompt — notify validation", () => {
   });
 
   describe("update", () => {
-    it("rejects setting notify=true on an existing inline (no-model) job", async () => {
+    it("accepts setting notify=true on an existing inline (no-model) job (no-op)", async () => {
       const { tool } = buildTool([exampleJob({ id: "j1" })]);
       const result = await tool.execute(
         "call",
@@ -151,7 +153,7 @@ describe("schedule_prompt — notify validation", () => {
         undefined,
         makeCtx(),
       );
-      expect(result.details?.error).toContain("'notify' requires 'model'");
+      expect(result.details?.error).toBeUndefined();
     });
 
     it("accepts setting notify=true alongside model in the same call", async () => {
@@ -178,7 +180,7 @@ describe("schedule_prompt — notify validation", () => {
       expect(result.details?.error).toBeUndefined();
     });
 
-    it("rejects clearing model when notify is still true", async () => {
+    it("accepts clearing model even when notify is still true (no-op for inline)", async () => {
       const { tool } = buildTool([
         exampleJob({ id: "j4", model: "haiku", notify: true }),
       ]);
@@ -189,7 +191,7 @@ describe("schedule_prompt — notify validation", () => {
         undefined,
         makeCtx(),
       );
-      expect(result.details?.error).toContain("'notify' requires 'model'");
+      expect(result.details?.error).toBeUndefined();
     });
 
     it("accepts clearing model when notify is also being cleared", async () => {
