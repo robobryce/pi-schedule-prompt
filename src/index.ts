@@ -5,8 +5,7 @@
  * - A `schedule_prompt` tool for managing scheduled prompts
  * - A widget displaying all scheduled prompts with status
  * - /schedule-prompt command for interactive management
- * - Ctrl+Alt+P shortcut to toggle widget
- * - Persistence via .pi/schedule-prompts.json
+ * - Persistence via .pi/schedule-prompts.json (jobs) and .pi/schedule-prompts-settings.json (settings)
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
