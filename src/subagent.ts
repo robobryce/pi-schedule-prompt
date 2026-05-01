@@ -10,33 +10,45 @@ import type { Model } from "@mariozechner/pi-ai";
 import {
   type AgentSession,
   type AgentSessionEvent,
+  bashTool,
   createAgentSession,
   DefaultResourceLoader,
+  editTool,
   type ExtensionContext,
+  findTool,
   getAgentDir,
+  grepTool,
+  lsTool,
+  readTool,
   SessionManager,
   SettingsManager,
+  writeTool,
 } from "@mariozechner/pi-coding-agent";
 
 export type SubagentResult =
   | { ok: true; text: string }
   | { ok: false; error: string };
 
-const DEFAULT_TOOLS = ["bash", "read", "edit", "write", "grep", "find", "ls"];
+const DEFAULT_TOOLS = [bashTool, readTool, editTool, writeTool, grepTool, findTool, lsTool];
 
-function resolveModel(
+export function resolveModel(
   registry: ExtensionContext["modelRegistry"],
   modelStr: string,
 ): Model<any> | undefined {
+  let fuzzyNeedle = modelStr;
   const slash = modelStr.indexOf("/");
   if (slash !== -1) {
     const provider = modelStr.slice(0, slash);
     const id = modelStr.slice(slash + 1);
     const found = registry.find(provider, id);
     if (found) return found;
+    // Slash-form didn't exact-match; fuzzy against the id portion only —
+    // matching against "anthropic/haiku" would never find anything since model
+    // ids don't include the provider prefix.
+    fuzzyNeedle = id;
   }
 
-  const needle = modelStr.toLowerCase();
+  const needle = fuzzyNeedle.toLowerCase();
   const candidates = registry.getAvailable();
   return (
     candidates.find((m) => m.id.toLowerCase() === needle) ??
@@ -45,7 +57,7 @@ function resolveModel(
   );
 }
 
-function getLastAssistantText(session: AgentSession): string {
+export function getLastAssistantText(session: AgentSession): string {
   for (let i = session.messages.length - 1; i >= 0; i--) {
     const msg = session.messages[i];
     if (msg.role !== "assistant") continue;
@@ -65,7 +77,7 @@ function getLastAssistantText(session: AgentSession): string {
   return "";
 }
 
-function describeAvailableModels(
+export function describeAvailableModels(
   registry: ExtensionContext["modelRegistry"],
 ): string {
   const available = registry.getAvailable();
@@ -96,12 +108,12 @@ export async function runSubagentOnce(
       agentDir,
       // Critical: prevent this very extension (and any other) from re-loading
       // recursively into the subagent and starting another scheduler.
+      // Context files (AGENTS.md / CLAUDE.md) are loaded by the loader's defaults
+      // so the subagent picks up project conventions.
       noExtensions: true,
       noSkills: true,
       noPromptTemplates: true,
       noThemes: true,
-      // Keep AGENTS.md / CLAUDE.md so the subagent picks up project conventions.
-      noContextFiles: false,
     });
     await loader.reload();
 
