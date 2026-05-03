@@ -22,3 +22,5 @@ tests/
 *.spec.ts
 
 .pi/
+.claude/
+.github/
