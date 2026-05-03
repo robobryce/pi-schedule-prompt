@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-03
+
 ### Added
 - Per-session job binding (closes #5): each job has an optional `session` field on `CronJob`. Jobs without a `session` field still load in every pi running in the cwd — the explicit opt-in to "any pi runs it" (useful for hand-edited project-wide cron; accepts duplicate fires)
 - `defaultJobScope` setting (`"session"` | `"workdir"`) controls whether newly-created jobs are bound to the creating session. Toggle via `/schedule-prompt → Settings → Bind new jobs to session`; persists in the existing two-layer settings file

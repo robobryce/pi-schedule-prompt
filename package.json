@@ -1,6 +1,6 @@
 {
   "name": "pi-schedule-prompt",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Pi's Heartbeat - A pi extension for scheduling recurring and one-shot agent prompts with cron-like functionality",
   "author": "tintinweb",
   "license": "MIT",
@@ -30,7 +30,7 @@
     "@mariozechner/pi-tui": ">=0.70.5"
   },
   "dependencies": {
-    "croner": "^8.0.0",
+    "croner": "^10.0.1",
     "nanoid": "^5.0.0",
     "typebox": "^1.1.24"
   },
@@ -45,8 +45,8 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.8",
-    "@types/node": "^20.19.33",
-    "typescript": "^5.9.3",
+    "@types/node": "^25.6.0",
+    "typescript": "^6.0.3",
     "vitest": "^4.0.18"
   },
   "pi": {
