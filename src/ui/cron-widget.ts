@@ -8,7 +8,7 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { DynamicBorder } from "@mariozechner/pi-coding-agent";
 import { Container, Spacer, Text } from "@mariozechner/pi-tui";
-import type { CronScheduler } from "../scheduler.js";
+import { CronScheduler } from "../scheduler.js";
 import type { CronStorage } from "../storage.js";
 
 const WIDGET_ID = "schedule-prompts";
@@ -122,12 +122,20 @@ export class CronWidget {
     private storage: CronStorage,
     private scheduler: CronScheduler,
     private pi: ExtensionAPI,
-    private isVisible: () => boolean
+    private isVisible: () => boolean,
+    private sessionId: string | undefined = undefined,
   ) {
     // Listen for cron changes to refresh widget
     this.pi.events.on("cron:change", () => {
       this.refresh();
     });
+  }
+
+  /** Jobs this session loads — same predicate as the scheduler. */
+  private loadedJobs() {
+    return this.storage
+      .getAllJobs()
+      .filter((j) => CronScheduler.isLoadedFor(j, this.sessionId));
   }
 
   /**
@@ -140,8 +148,8 @@ export class CronWidget {
       return;
     }
 
-    // Auto-hide if no jobs configured
-    const jobs = this.storage.getAllJobs();
+    // Auto-hide if no jobs are loaded for this session
+    const jobs = this.loadedJobs();
     if (jobs.length === 0) {
       this.hide(ctx);
       return;
@@ -201,8 +209,8 @@ export class CronWidget {
    * Render the widget content
    */
   private renderWidget(width: number, theme: any): string[] {
-    const jobs = this.storage.getAllJobs();
-    
+    const jobs = this.loadedJobs();
+
     // Deduplicate jobs by ID (safeguard against rendering issues)
     const uniqueJobs = Array.from(
       new Map(jobs.map(job => [job.id, job])).values()

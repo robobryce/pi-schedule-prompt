@@ -6,9 +6,17 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "@mariozechner/pi-coding-agent";
 
+export type JobScope = "session" | "workdir";
+
 export interface ScheduleSettings {
   /** Default true. Project file overrides global. */
   widgetVisible?: boolean;
+  /**
+   * Default scope for newly-created jobs. `"session"` (default) writes
+   * `session: <currentSessionId>` so only the creating pi fires the job;
+   * `"workdir"` omits the field so every pi in this cwd fires it.
+   */
+  defaultJobScope?: JobScope;
 }
 
 const FILE = "schedule-prompts-settings.json";
@@ -16,7 +24,12 @@ const FILE = "schedule-prompts-settings.json";
 function sanitize(raw: unknown): ScheduleSettings {
   if (!raw || typeof raw !== "object") return {};
   const r = raw as Record<string, unknown>;
-  return typeof r.widgetVisible === "boolean" ? { widgetVisible: r.widgetVisible } : {};
+  const out: ScheduleSettings = {};
+  if (typeof r.widgetVisible === "boolean") out.widgetVisible = r.widgetVisible;
+  if (r.defaultJobScope === "session" || r.defaultJobScope === "workdir") {
+    out.defaultJobScope = r.defaultJobScope;
+  }
+  return out;
 }
 
 function read(path: string): ScheduleSettings {

@@ -154,6 +154,14 @@ The tool accepts multiple time formats:
 - Job data: `.pi/schedule-prompts.json` (project-local, atomic writes, auto-created)
 - Settings: two-layer config — `~/.pi/agent/schedule-prompts-settings.json` (global, hand-edited defaults) and `<cwd>/.pi/schedule-prompts-settings.json` (project, written by the UI). Project overrides global on load.
 
+**Job binding:**
+
+By default a job fires only in the session that created it — opening two pi sessions in the same directory won't double-fire schedules. To make a job fire in every pi in this cwd (useful for hand-edited project-wide cron), remove its `session` field from `<cwd>/.pi/schedule-prompts.json`.
+
+Toggle the default for new jobs in `/schedule-prompt → Settings → Bind new jobs to session`. Flipping only affects future jobs.
+
+**Heads up:** schedules only fire while a pi session is open in this directory; nothing is queued. A `daily 9am` cron only fires on days at least one pi is open at 9am.
+
 **Scheduler:**
 - Uses `croner` library for cron expressions
 - Native `setTimeout`/`setInterval` for intervals and one-shots

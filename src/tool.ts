@@ -2,16 +2,19 @@ import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { nanoid } from "nanoid";
 import { CronScheduler } from "./scheduler.js";
+import type { JobScope } from "./settings.js";
 import type { CronStorage } from "./storage.js";
 import type { CronJob, CronJobType, CronToolDetails, } from "./types.js";
 import { CronToolParams } from "./types.js";
 
 /**
- * Create the schedule_prompt tool definition
+ * Create the schedule_prompt tool definition.
+ * `getDefaultScope` is a getter so live setting toggles affect the next `add`.
  */
 export function createCronTool(
   getStorage: () => CronStorage,
-  getScheduler: () => CronScheduler
+  getScheduler: () => CronScheduler,
+  getDefaultScope: () => JobScope = () => "session",
 ): ToolDefinition<typeof CronToolParams, CronToolDetails> {
   return {
     name: "schedule_prompt",
@@ -126,6 +129,8 @@ export function createCronTool(
             }
 
             const now = new Date().toISOString();
+            const session =
+              getDefaultScope() === "session" ? ctx.sessionManager.getSessionId() : undefined;
             const job: CronJob = {
               id: nanoid(10),
               name: jobName,
@@ -139,6 +144,7 @@ export function createCronTool(
               description: params.description,
               model: params.model,
               notify: params.notify,
+              session,
             };
 
             storage.addJob(job);
@@ -222,10 +228,13 @@ export function createCronTool(
           }
 
           case "cleanup": {
-            // Remove all disabled jobs
-            const allJobs = storage.getAllJobs();
-            const disabledJobs = allJobs.filter((j) => !j.enabled);
-            
+            // Only touch jobs this session can see — foreign-session jobs are
+            // owned by other pis. Unbound disabled jobs are fair game.
+            const mySessionId = ctx.sessionManager.getSessionId();
+            const disabledJobs = storage
+              .getAllJobs()
+              .filter((j) => !j.enabled && CronScheduler.isLoadedFor(j, mySessionId));
+
             if (disabledJobs.length === 0) {
               details.jobs = [];
               return {
@@ -351,7 +360,10 @@ export function createCronTool(
           }
 
           case "list": {
-            const jobs = storage.getAllJobs();
+            const mySessionId = ctx.sessionManager.getSessionId();
+            const jobs = storage
+              .getAllJobs()
+              .filter((j) => CronScheduler.isLoadedFor(j, mySessionId));
             details.jobs = jobs;
 
             if (jobs.length === 0) {

@@ -31,18 +31,17 @@ export class CronScheduler {
   }
 
   /**
-   * Start the scheduler with all enabled jobs.
+   * Schedule all enabled jobs loaded for this session — see `isLoadedFor`.
+   * Foreign-session jobs are skipped so two pis in the same cwd don't double-fire.
    *
-   * Also clears any stale `lastStatus: "running"` from a prior session that was
-   * killed mid-execution (subagent aborted by shutdown, process kill, etc.). The
-   * field is informational — it tracks the *last completed* run — and would
-   * otherwise stick the widget on `⟳` until the cron next fires. We don't
-   * pretend the interrupted run "succeeded": we just drop the stale flag so the
-   * row reads as ready-to-run instead of stuck.
+   * Also clears stale `lastStatus: "running"` from an interrupted prior run of
+   * *this* session (process kill, abort) — otherwise the widget sticks on `⟳`
+   * until the cron next fires. Other sessions' flags are theirs to manage.
    */
   start(): void {
-    const allJobs = this.storage.getAllJobs();
-    for (const job of allJobs) {
+    const mySessionId = this.ctx.sessionManager.getSessionId();
+    for (const job of this.storage.getAllJobs()) {
+      if (!CronScheduler.isLoadedFor(job, mySessionId)) continue;
       if (job.lastStatus === "running") {
         this.storage.updateJob(job.id, { lastStatus: undefined });
       }
@@ -50,6 +49,11 @@ export class CronScheduler {
         this.scheduleJob(job);
       }
     }
+  }
+
+  /** Unbound jobs (no `session` field) load for everyone. */
+  static isLoadedFor(job: CronJob, sessionId: string | undefined): boolean {
+    return !job.session || job.session === sessionId;
   }
 
   /**
@@ -194,6 +198,12 @@ export class CronScheduler {
    * Execute a job's prompt
    */
   private async executeJob(job: CronJob): Promise<void> {
+    // Re-read before firing — closure-captured `job` is stale if storage was
+    // edited mid-tick (removed, disabled, or `session` rebound by hand-edit).
+    const fresh = this.storage.getJob(job.id);
+    if (!fresh || !fresh.enabled) return;
+    if (!CronScheduler.isLoadedFor(fresh, this.ctx.sessionManager.getSessionId())) return;
+
     console.log(`Executing scheduled prompt: ${job.name} (${job.id})`);
 
     if (job.model) {

@@ -41,8 +41,12 @@ function makePi() {
   } as any;
 }
 
-function makeCtx() {
-  return { cwd: "/tmp", modelRegistry: { find: () => undefined, getAvailable: () => [] } } as any;
+function makeCtx(sessionId = "test-session") {
+  return {
+    cwd: "/tmp",
+    modelRegistry: { find: () => undefined, getAvailable: () => [] },
+    sessionManager: { getSessionId: () => sessionId },
+  } as any;
 }
 
 function exampleJob(overrides: Partial<CronJob> = {}): CronJob {
@@ -385,5 +389,101 @@ describe("CronScheduler — inline path is unaffected by mock", () => {
       prompt: job.prompt,
     });
     expect(markerOpts).toBeUndefined();
+  });
+});
+
+describe("CronScheduler — session binding filter", () => {
+  it("isLoadedFor: unbound job is loaded for any session", () => {
+    expect(CronScheduler.isLoadedFor(exampleJob(), "any")).toBe(true);
+    expect(CronScheduler.isLoadedFor(exampleJob(), undefined)).toBe(true);
+  });
+
+  it("isLoadedFor: bound job loads only for the matching session", () => {
+    const j = exampleJob({ session: "A" });
+    expect(CronScheduler.isLoadedFor(j, "A")).toBe(true);
+    expect(CronScheduler.isLoadedFor(j, "B")).toBe(false);
+    expect(CronScheduler.isLoadedFor(j, undefined)).toBe(false);
+  });
+
+  it("start() does not schedule foreign-session jobs", () => {
+    const pi = makePi();
+    const cronSchedule = "0 0 * * * *"; // hourly
+    // Mark the foreign job lastStatus=running to also assert the stale-running
+    // sweep skips it (we don't touch other sessions' state).
+    const mine = exampleJob({
+      id: "mine", type: "cron", schedule: cronSchedule, session: "session-A",
+    });
+    const foreign = exampleJob({
+      id: "foreign", type: "cron", schedule: cronSchedule,
+      session: "session-B", lastStatus: "running",
+    });
+    const unbound = exampleJob({
+      id: "unbound", type: "cron", schedule: cronSchedule,
+    });
+    const storage = makeStorage([mine, foreign, unbound]);
+    const scheduler = new CronScheduler(storage, pi, makeCtx("session-A"));
+
+    try {
+      scheduler.start();
+      const jobsMap = (scheduler as any).jobs as Map<string, unknown>;
+      expect(jobsMap.has("mine")).toBe(true);
+      expect(jobsMap.has("unbound")).toBe(true);
+      expect(jobsMap.has("foreign")).toBe(false);
+      // Foreign session's stale-running flag is untouched — it's not ours.
+      expect(storage.getJob("foreign").lastStatus).toBe("running");
+    } finally {
+      scheduler.stop();
+    }
+  });
+
+  it("executeJob bails when storage now reports the job is bound to another session", async () => {
+    const pi = makePi();
+    const job = exampleJob({ id: "j", session: "session-A" });
+    const storage = makeStorage([job]);
+    const scheduler = new CronScheduler(storage, pi, makeCtx("session-B"));
+
+    await (scheduler as any).executeJob(job);
+
+    // No marker, no user message — the defensive re-read caught the mismatch
+    // before the scheduler dispatched.
+    expect(pi.sendMessage).not.toHaveBeenCalled();
+    expect(pi.sendUserMessage).not.toHaveBeenCalled();
+  });
+
+  it("executeJob bails when the job has been removed mid-tick", async () => {
+    const pi = makePi();
+    const job = exampleJob({ id: "j" });
+    const storage = makeStorage([]); // job not in storage anymore
+    const scheduler = new CronScheduler(storage, pi, makeCtx("session-A"));
+
+    await (scheduler as any).executeJob(job);
+
+    expect(pi.sendMessage).not.toHaveBeenCalled();
+    expect(pi.sendUserMessage).not.toHaveBeenCalled();
+  });
+
+  it("executeJob bails when the job was disabled mid-tick (e.g. hand-edited file)", async () => {
+    const pi = makePi();
+    const job = exampleJob({ id: "j", enabled: false });
+    const storage = makeStorage([job]);
+    const scheduler = new CronScheduler(storage, pi, makeCtx("session-A"));
+
+    await (scheduler as any).executeJob(job);
+
+    expect(pi.sendMessage).not.toHaveBeenCalled();
+    expect(pi.sendUserMessage).not.toHaveBeenCalled();
+  });
+
+  it("executeJob bails before delegating to subagent when session no longer matches", async () => {
+    const pi = makePi();
+    const job = exampleJob({ id: "j", model: "haiku", session: "session-A" });
+    const storage = makeStorage([job]);
+    const scheduler = new CronScheduler(storage, pi, makeCtx("session-B"));
+
+    await (scheduler as any).executeJob(job);
+
+    // Guard fires before the model branch — subagent never runs, no markers.
+    expect(mockRunSubagentOnce).not.toHaveBeenCalled();
+    expect(pi.sendMessage).not.toHaveBeenCalled();
   });
 });

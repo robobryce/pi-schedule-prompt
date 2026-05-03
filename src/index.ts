@@ -12,7 +12,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { nanoid } from "nanoid";
 import { CronScheduler } from "./scheduler.js";
-import { loadSettings, saveSettings } from "./settings.js";
+import { loadSettings, saveSettings, type ScheduleSettings } from "./settings.js";
 import { CronStorage } from "./storage.js";
 import { createCronTool } from "./tool.js";
 import { CronWidget } from "./ui/cron-widget.js";
@@ -21,7 +21,10 @@ export default async function (pi: ExtensionAPI) {
   let storage: CronStorage;
   let scheduler: CronScheduler;
   let widget: CronWidget;
-  let widgetVisible = true;
+  // Refreshed in initializeSession; mutated by Settings submenu. The tool and
+  // widget read via closure so toggles take effect without re-registering.
+  let settings: ScheduleSettings = {};
+  const isWidgetVisible = () => settings.widgetVisible !== false;
 
   // Register custom message renderer for scheduled prompts
   pi.registerMessageRenderer("scheduled_prompt", (message, _options, theme) => {
@@ -70,7 +73,8 @@ export default async function (pi: ExtensionAPI) {
   // Register the tool once with getter functions
   const tool = createCronTool(
     () => storage,
-    () => scheduler
+    () => scheduler,
+    () => settings.defaultJobScope ?? "session",
   );
   pi.registerTool(tool);
 
@@ -83,18 +87,15 @@ export default async function (pi: ExtensionAPI) {
     // accumulating duplicate fires for every recurring job over time.
     cleanupSession(ctx);
 
+    settings = loadSettings(ctx.cwd);
     storage = new CronStorage(ctx.cwd);
     scheduler = new CronScheduler(storage, pi, ctx);
-    widget = new CronWidget(storage, scheduler, pi, () => widgetVisible);
+    widget = new CronWidget(storage, scheduler, pi, isWidgetVisible, ctx.sessionManager.getSessionId());
 
-    const s = loadSettings(ctx.cwd);
-    if (typeof s.widgetVisible === "boolean") widgetVisible = s.widgetVisible;
-
-    // Load and start all enabled jobs
     scheduler.start();
 
     // Show widget
-    if (widgetVisible) {
+    if (isWidgetVisible()) {
       widget.show(ctx);
     }
   };
@@ -112,17 +113,18 @@ export default async function (pi: ExtensionAPI) {
     }
   };
 
-  const autoCleanupDisabledJobs = () => {
-    // Remove all disabled jobs on exit
-    if (storage) {
-      const jobs = storage.getAllJobs();
-      const disabledJobs = jobs.filter((j) => !j.enabled);
-      
-      if (disabledJobs.length > 0) {
-        console.log(`Auto-cleanup: removing ${disabledJobs.length} disabled job(s)`);
-        for (const job of disabledJobs) {
-          storage.removeJob(job.id);
-        }
+  const autoCleanupDisabledJobs = (ctx: any) => {
+    // Only sweep our own (or unbound) disabled jobs — never another session's.
+    if (!storage) return;
+    const mySessionId = ctx.sessionManager.getSessionId();
+    const disabledJobs = storage
+      .getAllJobs()
+      .filter((j) => !j.enabled && CronScheduler.isLoadedFor(j, mySessionId));
+
+    if (disabledJobs.length > 0) {
+      console.log(`Auto-cleanup: removing ${disabledJobs.length} disabled job(s)`);
+      for (const job of disabledJobs) {
+        storage.removeJob(job.id);
       }
     }
   };
@@ -131,13 +133,13 @@ export default async function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (event, ctx) => {
     if (event.reason !== "startup") {
-      autoCleanupDisabledJobs();
+      autoCleanupDisabledJobs(ctx);
     }
     initializeSession(ctx);
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
-    autoCleanupDisabledJobs();
+    autoCleanupDisabledJobs(ctx);
     cleanupSession(ctx);
   });
 
@@ -146,6 +148,12 @@ export default async function (pi: ExtensionAPI) {
   pi.registerCommand("schedule-prompt", {
     description: "Manage scheduled prompts interactively",
     handler: async (_args, ctx) => {
+      const mySessionId = ctx.sessionManager.getSessionId();
+      const myJobs = () =>
+        storage
+          .getAllJobs()
+          .filter((j) => CronScheduler.isLoadedFor(j, mySessionId));
+
       const action = await ctx.ui.select("Scheduled Prompts", [
         "View All Jobs",
         "Add New Job",
@@ -169,7 +177,7 @@ export default async function (pi: ExtensionAPI) {
 
       switch (actionKey) {
         case "list": {
-          const jobs = storage.getAllJobs();
+          const jobs = myJobs();
           if (jobs.length === 0) {
             ctx.ui.notify("No scheduled prompts configured", "info");
             return;
@@ -254,6 +262,8 @@ export default async function (pi: ExtensionAPI) {
               }
             }
 
+            const session =
+              (settings.defaultJobScope ?? "session") === "session" ? mySessionId : undefined;
             const job = {
               id: nanoid(10),
               name,
@@ -264,6 +274,7 @@ export default async function (pi: ExtensionAPI) {
               intervalMs,
               createdAt: new Date().toISOString(),
               runCount: 0,
+              session,
             };
 
             storage.addJob(job);
@@ -276,7 +287,7 @@ export default async function (pi: ExtensionAPI) {
         }
 
         case "toggle": {
-          const jobs = storage.getAllJobs();
+          const jobs = myJobs();
           if (jobs.length === 0) {
             ctx.ui.notify("No scheduled prompts configured", "info");
             return;
@@ -305,7 +316,7 @@ export default async function (pi: ExtensionAPI) {
         }
 
         case "remove": {
-          const jobs = storage.getAllJobs();
+          const jobs = myJobs();
           if (jobs.length === 0) {
             ctx.ui.notify("No scheduled prompts configured", "info");
             return;
@@ -336,7 +347,7 @@ export default async function (pi: ExtensionAPI) {
         }
 
         case "cleanup": {
-          const jobs = storage.getAllJobs();
+          const jobs = myJobs();
           const disabledJobs = jobs.filter((j) => !j.enabled);
 
           if (disabledJobs.length === 0) {
@@ -363,18 +374,33 @@ export default async function (pi: ExtensionAPI) {
           // Loop so the menu redraws with current state after each change —
           // the menu is the truth display; only persist failures need a toast.
           while (true) {
+            const widgetState = isWidgetVisible() ? "shown" : "hidden";
+            const bound = (settings.defaultJobScope ?? "session") === "session";
             const choice = await ctx.ui.select("Settings", [
-              `Widget visibility: ${widgetVisible ? "shown" : "hidden"}`,
+              `Widget visibility: ${widgetState}`,
+              `Bind new jobs to session: ${bound ? "yes" : "no"}`,
               "Back",
             ]);
             if (!choice || choice === "Back") return;
             if (choice.startsWith("Widget visibility:")) {
-              widgetVisible = !widgetVisible;
-              widgetVisible ? widget.show(ctx) : widget.hide(ctx);
-              const persisted = saveSettings(ctx.cwd, { widgetVisible });
+              const next = !isWidgetVisible();
+              settings = { ...settings, widgetVisible: next };
+              next ? widget.show(ctx) : widget.hide(ctx);
+              const persisted = saveSettings(ctx.cwd, settings);
               if (!persisted) {
                 ctx.ui.notify(
-                  `Widget ${widgetVisible ? "shown" : "hidden"} (session only; failed to persist)`,
+                  `Widget ${next ? "shown" : "hidden"} (session only; failed to persist)`,
+                  "warning",
+                );
+              }
+            } else if (choice.startsWith("Bind new jobs to session:")) {
+              // Affects newly-created jobs only; existing jobs keep their binding.
+              const next = bound ? "workdir" : "session";
+              settings = { ...settings, defaultJobScope: next };
+              const persisted = saveSettings(ctx.cwd, settings);
+              if (!persisted) {
+                ctx.ui.notify(
+                  `Bind new jobs to session: ${next === "session" ? "yes" : "no"} (session only; failed to persist)`,
                   "warning",
                 );
               }

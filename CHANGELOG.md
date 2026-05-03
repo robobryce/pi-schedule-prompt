@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Per-session job binding (closes #5): each job has an optional `session` field on `CronJob`. Jobs without a `session` field still load in every pi running in the cwd — the explicit opt-in to "any pi runs it" (useful for hand-edited project-wide cron; accepts duplicate fires)
+- `defaultJobScope` setting (`"session"` | `"workdir"`) controls whether newly-created jobs are bound to the creating session. Toggle via `/schedule-prompt → Settings → Bind new jobs to session`; persists in the existing two-layer settings file
+- Defensive re-read at dispatch: `executeJob` / `executeJobInSubagent` re-read the job from storage before firing and bail if it's been removed, disabled, or rebound to another session mid-tick
+
+### Changed
+- **Default behaviour change:** new jobs are now bound to the creating session by default (`defaultJobScope: "session"`). Two pi sessions in the same cwd no longer fire the same newly-added job twice. Existing jobs from older versions have no `session` field and keep firing in every pi — flip the setting and re-add (or hand-edit) to migrate them
+- Widget, `list`, `cleanup`, and shutdown auto-cleanup all filter to "loaded" jobs only (`!session || session === mySessionId`). Foreign-session jobs are invisible to other pi sessions and never touched on shutdown
+
 ## [0.2.0] - 2026-05-01
 
 ### Added
