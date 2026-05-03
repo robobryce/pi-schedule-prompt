@@ -1,8 +1,8 @@
 /**
  * Interactive add flow for `/schedule-prompt`.
  * Steps the user through name → type → schedule (with re-prompt on validation
- * failure) → prompt → confirm. Saves and schedules the new job, or returns
- * silently on cancellation.
+ * failure) → prompt → scope → confirm. Saves and schedules the new job, or
+ * returns silently on cancellation.
  */
 
 import type { ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
@@ -67,15 +67,27 @@ export async function runAddFlow(
   const prompt = await ctx.ui.input("Prompt", "Enter the prompt to execute");
   if (!prompt) return;
 
+  // Last decision before save. Default option is listed first, picked up
+  // from the global `defaultJobScope` setting — so hitting enter takes the
+  // configured default.
+  const defaultIsSession = (settings.defaultJobScope ?? "session") === "session";
+  const SCOPE_SESSION = "Bind to this session — only this pi fires it";
+  const SCOPE_SHARED = "Shared — every pi in this cwd fires it (accepts duplicate fires)";
+  const scopeChoice = await ctx.ui.select(
+    "Scope",
+    defaultIsSession ? [SCOPE_SESSION, SCOPE_SHARED] : [SCOPE_SHARED, SCOPE_SESSION],
+  );
+  if (!scopeChoice) return;
+  const session = scopeChoice === SCOPE_SESSION ? mySessionId : undefined;
+
   const human = CronScheduler.describeSchedule(jobType, schedule);
+  const scopeLabel = session ? "session-bound" : "shared (any pi here)";
   const confirmed = await ctx.ui.confirm(
     "Confirm",
-    `Save "${name}"?\nSchedule: ${human}\nPrompt: ${prompt}`,
+    `Save "${name}"?\nSchedule: ${human}\nScope: ${scopeLabel}\nPrompt: ${prompt}`,
   );
   if (!confirmed) return;
 
-  const session =
-    (settings.defaultJobScope ?? "session") === "session" ? mySessionId : undefined;
   const job: CronJob = {
     id: nanoid(10),
     name,

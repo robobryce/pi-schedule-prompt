@@ -125,6 +125,17 @@ export class JobsView implements Component {
       this.refresh();
       return;
     }
+    if (matchesKey(data, "s")) {
+      // Toggle this job's binding: session-bound ↔ shared. Other pi sessions
+      // already running in this cwd won't see the change until they restart;
+      // their in-memory schedulers are stale until session_start.
+      if (this.isSelectionForeign()) return;
+      const session = sel.session ? undefined : this.mySessionId;
+      this.storage.updateJob(sel.id, { session });
+      this.scheduler.updateJob(sel.id, { ...sel, session });
+      this.refresh();
+      return;
+    }
     if (matchesKey(data, "x")) {
       if (this.isSelectionForeign()) return;
       this.confirm = { kind: "remove", id: sel.id, name: sel.name };
@@ -158,7 +169,7 @@ export class JobsView implements Component {
       lines.push(` ${this.theme.fg("accent", this.theme.bold("Jobs"))}  —  a add   q quit`);
     } else {
       lines.push(
-        ` ${this.theme.fg("accent", this.theme.bold("Jobs"))}  —  ↑↓ select   a add   t toggle   x remove   c cleanup   q quit`,
+        ` ${this.theme.fg("accent", this.theme.bold("Jobs"))}  —  ↑↓ select   a add   t toggle   s scope   x remove   c cleanup   q quit`,
       );
     }
     lines.push(rule);
