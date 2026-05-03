@@ -487,3 +487,87 @@ describe("CronScheduler — session binding filter", () => {
     expect(pi.sendMessage).not.toHaveBeenCalled();
   });
 });
+
+describe("CronScheduler.validateSchedule", () => {
+  it("interval: accepts valid duration, returns intervalMs", () => {
+    const r = CronScheduler.validateSchedule("interval", "5m");
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.schedule).toBe("5m");
+      expect(r.intervalMs).toBe(5 * 60 * 1000);
+    }
+  });
+
+  it("interval: rejects garbage with a useful hint", () => {
+    const r = CronScheduler.validateSchedule("interval", "five minutes");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("'5m', '1h', '30s'");
+  });
+
+  it("once: accepts relative time and resolves to ISO", () => {
+    const r = CronScheduler.validateSchedule("once", "+5m");
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      const t = new Date(r.schedule).getTime();
+      expect(t - Date.now()).toBeGreaterThan(4 * 60 * 1000);
+      expect(t - Date.now()).toBeLessThan(6 * 60 * 1000);
+    }
+  });
+
+  it("once: rejects past timestamps", () => {
+    const r = CronScheduler.validateSchedule("once", "2000-01-01T00:00:00Z");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("in the past");
+  });
+
+  it("once: rejects timestamps under 5s away with a relative-time suggestion", () => {
+    const soon = new Date(Date.now() + 2000).toISOString();
+    const r = CronScheduler.validateSchedule("once", soon);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error).toContain("too soon");
+      expect(r.error).toMatch(/use relative time like '\+\d+s'/);
+    }
+  });
+
+  it("once: rejects unparseable timestamps", () => {
+    const r = CronScheduler.validateSchedule("once", "not-a-date");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("Invalid timestamp");
+  });
+
+  it("cron: accepts valid 6-field expression", () => {
+    const r = CronScheduler.validateSchedule("cron", "0 0 9 * * *");
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.schedule).toBe("0 0 9 * * *");
+  });
+
+  it("cron: rejects 5-field expression with field-count error", () => {
+    const r = CronScheduler.validateSchedule("cron", "0 9 * * *");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("6 fields");
+  });
+});
+
+describe("CronScheduler.describeSchedule", () => {
+  it("cron: humanizes known patterns", () => {
+    expect(CronScheduler.describeSchedule("cron", "0 0 0 * * *")).toBe("daily");
+    expect(CronScheduler.describeSchedule("cron", "0 */5 * * * *")).toBe("every 5 min");
+  });
+
+  it("cron: returns raw expression untouched for unknown patterns (no guessing)", () => {
+    const raw = "15 30 8 1,15 * 1-5";
+    expect(CronScheduler.describeSchedule("cron", raw)).toBe(raw);
+  });
+
+  it("interval: prefixes with 'every'", () => {
+    expect(CronScheduler.describeSchedule("interval", "5m")).toBe("every 5m");
+  });
+
+  it("once: renders ISO as 'Mon DD HH:MM'", () => {
+    const iso = "2026-02-13T15:30:00.000Z";
+    const out = CronScheduler.describeSchedule("once", iso);
+    // Format depends on local TZ for the day/hour fields, so just assert shape.
+    expect(out).toMatch(/^[A-Z][a-z]{2} \d{1,2} \d{2}:\d{2}$/);
+  });
+});

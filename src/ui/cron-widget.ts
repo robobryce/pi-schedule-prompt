@@ -8,7 +8,7 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { DynamicBorder } from "@mariozechner/pi-coding-agent";
 import { Container, Spacer, Text } from "@mariozechner/pi-tui";
-import { CronScheduler } from "../scheduler.js";
+import { CronScheduler, formatISOShort, humanizeCron } from "../scheduler.js";
 import type { CronStorage } from "../storage.js";
 
 const WIDGET_ID = "schedule-prompts";
@@ -39,76 +39,6 @@ function formatRelativeTime(date: Date | string): string {
   }
 
   return diff > 0 ? `in ${timeStr}` : `${timeStr} ago`;
-}
-
-/**
- * Convert cron expression to human-readable text
- */
-function humanizeCron(expression: string): string {
-  // Common patterns (6-field format)
-  const patterns: Record<string, string> = {
-    '* * * * * *': 'every second',
-    '0 * * * * *': 'every minute',
-    '0 */5 * * * *': 'every 5 min',
-    '0 */10 * * * *': 'every 10 min',
-    '0 */15 * * * *': 'every 15 min',
-    '0 */30 * * * *': 'every 30 min',
-    '0 0 * * * *': 'every hour',
-    '0 0 */2 * * *': 'every 2 hours',
-    '0 0 */3 * * *': 'every 3 hours',
-    '0 0 */6 * * *': 'every 6 hours',
-    '0 0 0 * * *': 'daily',
-    '0 0 0 * * 0': 'weekly',
-    '0 0 0 1 * *': 'monthly',
-    '0 0 9 * * 1-5': '9am weekdays',
-    '0 0 0 * * 1-5': 'weekdays',
-    '0 0 0 * * 0,6': 'weekends',
-  };
-
-  // Check exact match first
-  const normalized = expression.trim();
-  if (patterns[normalized]) {
-    return patterns[normalized];
-  }
-
-  // Parse */N patterns for minutes/hours
-  const match = normalized.match(/^0 \*\/(\d+) \* \* \* \*$/);
-  if (match) {
-    return `every ${match[1]} min`;
-  }
-
-  const hourMatch = normalized.match(/^0 0 \*\/(\d+) \* \* \*$/);
-  if (hourMatch) {
-    return `every ${hourMatch[1]}h`;
-  }
-
-  // Specific time pattern (0 0 HH * * *)
-  const timeMatch = normalized.match(/^0 0 (\d+) \* \* \*$/);
-  if (timeMatch) {
-    const hour = parseInt(timeMatch[1], 10);
-    return `daily at ${hour}:00`;
-  }
-
-  // Fallback to truncated expression
-  return normalized.length > 15 ? normalized.substring(0, 12) + '...' : normalized;
-}
-
-/**
- * Format ISO timestamp to short readable format (e.g., "Feb 13 15:30")
- */
-function formatISOShort(iso: string): string {
-  try {
-    const date = new Date(iso);
-    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    const month = months[date.getMonth()];
-    const day = date.getDate();
-    const hours = date.getHours().toString().padStart(2, '0');
-    const minutes = date.getMinutes().toString().padStart(2, '0');
-    return `${month} ${day} ${hours}:${minutes}`;
-  } catch {
-    // Fallback if parsing fails
-    return iso.length > 18 ? iso.substring(0, 15) + '...' : iso;
-  }
 }
 
 /**
@@ -250,17 +180,17 @@ export class CronWidget {
       const namePadded = nameRaw.padEnd(15);
       const nameText = job.enabled ? theme.fg("text", namePadded) : theme.fg("muted", namePadded);
 
-      // Schedule (max 15 chars for column, pad before coloring)
+      // Schedule (max 15 chars for column, pad before coloring). The helpers
+      // return full strings; we truncate at the column boundary here.
       let scheduleRaw: string;
       if (job.type === "cron") {
         scheduleRaw = humanizeCron(job.schedule);
       } else if (job.type === "once" && job.schedule.includes("T")) {
-        // Format ISO timestamps
         scheduleRaw = formatISOShort(job.schedule);
       } else {
-        // For intervals and relative times, show as-is
-        scheduleRaw = job.schedule.length > 15 ? job.schedule.substring(0, 12) + "..." : job.schedule;
+        scheduleRaw = job.schedule;
       }
+      if (scheduleRaw.length > 15) scheduleRaw = `${scheduleRaw.substring(0, 12)}...`;
       const schedulePadded = scheduleRaw.padEnd(15);
       const scheduleText = theme.fg("dim", schedulePadded);
 

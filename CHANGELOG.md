@@ -11,10 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Per-session job binding (closes #5): each job has an optional `session` field on `CronJob`. Jobs without a `session` field still load in every pi running in the cwd — the explicit opt-in to "any pi runs it" (useful for hand-edited project-wide cron; accepts duplicate fires)
 - `defaultJobScope` setting (`"session"` | `"workdir"`) controls whether newly-created jobs are bound to the creating session. Toggle via `/schedule-prompt → Settings → Bind new jobs to session`; persists in the existing two-layer settings file
 - Defensive re-read at dispatch: `executeJob` / `executeJobInSubagent` re-read the job from storage before firing and bail if it's been removed, disabled, or rebound to another session mid-tick
+- `CronScheduler.validateSchedule(type, schedule)` — single source of truth for schedule validation, shared by tool `add`/`update` and the UI. `CronScheduler.describeSchedule(type, schedule)` renders a humanized form for confirm dialogs and the widget
+- `/schedule-prompt → Add New Job`: the schedule step re-prompts on validation failure instead of bailing the whole flow — the user no longer loses name, type, and prompt to a single typo
+- `/schedule-prompt → Add New Job`: confirm dialog with the humanized schedule before save (e.g. `Schedule: daily at 9:00`), so a typo'd cron expression like `0 9 * * * *` (every minute past hour 9) doesn't silently get saved as if it were `0 0 9 * * *` (9am daily)
+- `/schedule-prompt → Add New Job` now accepts relative time (`+5m`, `+10s`) and rejects past / too-soon timestamps with the same messages the tool uses; previously the manual flow only accepted ISO strings
 
 ### Changed
 - **Default behaviour change:** new jobs are now bound to the creating session by default (`defaultJobScope: "session"`). Two pi sessions in the same cwd no longer fire the same newly-added job twice. Existing jobs from older versions have no `session` field and keep firing in every pi — flip the setting and re-add (or hand-edit) to migrate them
 - Widget, `list`, `cleanup`, and shutdown auto-cleanup all filter to "loaded" jobs only (`!session || session === mySessionId`). Foreign-session jobs are invisible to other pi sessions and never touched on shutdown
+- `humanizeCron` and `formatISOShort` lifted from `cron-widget.ts` into `scheduler.ts` (re-exported) so the same human-readable form is used by the widget and the new confirm dialog
+- `/schedule-prompt → Add New Job` now checks for duplicate names before any prompts — was only checked on the tool path
 
 ## [0.2.0] - 2026-05-01
 

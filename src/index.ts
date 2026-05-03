@@ -205,6 +205,11 @@ export default async function (pi: ExtensionAPI) {
           const name = await ctx.ui.input("Job Name", "Enter a name for this scheduled prompt");
           if (!name) return;
 
+          if (storage.hasJobWithName(name)) {
+            ctx.ui.notify(`A job named "${name}" already exists`, "error");
+            return;
+          }
+
           const typeChoice = await ctx.ui.select("Job Type", [
             "Cron (recurring)",
             "Once (one-shot)",
@@ -212,77 +217,64 @@ export default async function (pi: ExtensionAPI) {
           ]);
           if (!typeChoice) return;
 
-          const typeMap: Record<string, string> = {
+          const typeMap: Record<string, "cron" | "once" | "interval"> = {
             "Cron (recurring)": "cron",
             "Once (one-shot)": "once",
             "Interval (periodic)": "interval",
           };
           const jobType = typeMap[typeChoice];
 
-          let schedulePrompt: string;
-          if (jobType === "cron") {
-            schedulePrompt = "Enter cron expression (6-field: sec min hour dom month dow):";
-          } else if (jobType === "once") {
-            schedulePrompt = "Enter ISO timestamp (e.g., 2026-02-13T10:30:00Z)";
-          } else {
-            schedulePrompt = "Enter interval (e.g., 5m, 1h, 30s)";
-          }
+          const placeholders: Record<string, string> = {
+            cron: "6-field cron, e.g. '0 0 9 * * *' for 9am daily",
+            once: "ISO timestamp or relative time (+10s, +5m, +1h)",
+            interval: "Duration, e.g. '5m', '1h', '30s'",
+          };
 
-          const scheduleRaw = await ctx.ui.input("Schedule", schedulePrompt);
-          if (!scheduleRaw) return;
-          const schedule = scheduleRaw.trim();
+          // Re-prompt the schedule field on validation failure so the user
+          // doesn't lose name/type and have to start over from the menu.
+          let schedule: string | undefined;
+          let intervalMs: number | undefined;
+          let placeholder = placeholders[jobType];
+          while (true) {
+            const raw = await ctx.ui.input("Schedule", placeholder);
+            if (!raw) return;
+            const result = CronScheduler.validateSchedule(jobType, raw.trim());
+            if (result.ok) {
+              schedule = result.schedule;
+              intervalMs = result.intervalMs;
+              break;
+            }
+            placeholder = result.error;
+          }
 
           const prompt = await ctx.ui.input("Prompt", "Enter the prompt to execute");
           if (!prompt) return;
 
-          // Validate and create job
-          try {
-            let intervalMs: number | undefined;
-            let validatedSchedule = schedule;
+          const human = CronScheduler.describeSchedule(jobType, schedule);
+          const confirmed = await ctx.ui.confirm(
+            "Confirm",
+            `Save "${name}"?\nSchedule: ${human}\nPrompt: ${prompt}`,
+          );
+          if (!confirmed) return;
 
-            if (jobType === "interval") {
-              const parsed = CronScheduler.parseInterval(schedule);
-              intervalMs = parsed !== null ? parsed : undefined;
-              if (!intervalMs) {
-                ctx.ui.notify("Invalid interval format", "error");
-                return;
-              }
-            } else if (jobType === "once") {
-              const date = new Date(schedule);
-              if (Number.isNaN(date.getTime())) {
-                ctx.ui.notify("Invalid timestamp format", "error");
-                return;
-              }
-              validatedSchedule = date.toISOString();
-            } else {
-              const validation = CronScheduler.validateCronExpression(schedule);
-              if (!validation.valid) {
-                ctx.ui.notify(`Invalid cron expression: ${validation.error}`, "error");
-                return;
-              }
-            }
+          const session =
+            (settings.defaultJobScope ?? "session") === "session" ? mySessionId : undefined;
+          const job = {
+            id: nanoid(10),
+            name,
+            schedule,
+            prompt,
+            enabled: true,
+            type: jobType,
+            intervalMs,
+            createdAt: new Date().toISOString(),
+            runCount: 0,
+            session,
+          };
 
-            const session =
-              (settings.defaultJobScope ?? "session") === "session" ? mySessionId : undefined;
-            const job = {
-              id: nanoid(10),
-              name,
-              schedule: validatedSchedule,
-              prompt,
-              enabled: true,
-              type: jobType as any,
-              intervalMs,
-              createdAt: new Date().toISOString(),
-              runCount: 0,
-              session,
-            };
-
-            storage.addJob(job);
-            scheduler.addJob(job);
-            ctx.ui.notify(`Created scheduled prompt: ${name}`, "info");
-          } catch (error: any) {
-            ctx.ui.notify(`Error: ${error.message}`, "error");
-          }
+          storage.addJob(job);
+          scheduler.addJob(job);
+          ctx.ui.notify(`Created scheduled prompt: ${name} (${human})`, "info");
           break;
         }
 
