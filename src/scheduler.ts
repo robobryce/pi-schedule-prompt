@@ -201,7 +201,7 @@ export class CronScheduler {
     // Re-read before firing — closure-captured `job` is stale if storage was
     // edited mid-tick (removed, disabled, or `session` rebound by hand-edit).
     const fresh = this.storage.getJob(job.id);
-    if (!fresh || !fresh.enabled) return;
+    if (!fresh?.enabled) return;
     if (!CronScheduler.isLoadedFor(fresh, this.ctx.sessionManager.getSessionId())) return;
 
     console.log(`Executing scheduled prompt: ${job.name} (${job.id})`);
