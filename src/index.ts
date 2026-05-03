@@ -8,14 +8,105 @@
  * - Persistence via .pi/schedule-prompts.json (jobs) and .pi/schedule-prompts-settings.json (settings)
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
+import type { OverlayHandle } from "@mariozechner/pi-tui";
 import { Text } from "@mariozechner/pi-tui";
 import { nanoid } from "nanoid";
 import { CronScheduler } from "./scheduler.js";
 import { loadSettings, type ScheduleSettings, saveSettings } from "./settings.js";
 import { CronStorage } from "./storage.js";
 import { createCronTool } from "./tool.js";
+import type { CronJob } from "./types.js";
 import { CronWidget } from "./ui/cron-widget.js";
+import { JobsView } from "./ui/jobs-view.js";
+
+/**
+ * Step the user through name → type → schedule (with re-prompt on validation
+ * failure) → prompt → confirm. Saves and schedules the new job. Returns when
+ * the flow finishes (success or cancellation). Used by both the `Jobs` view's
+ * `a` hotkey and as the manual add path.
+ */
+async function runAddFlow(
+  ctx: ExtensionCommandContext,
+  storage: CronStorage,
+  scheduler: CronScheduler,
+  settings: ScheduleSettings,
+  mySessionId: string | undefined,
+): Promise<void> {
+  const name = await ctx.ui.input("Job Name", "Enter a name for this scheduled prompt");
+  if (!name) return;
+
+  if (storage.hasJobWithName(name)) {
+    ctx.ui.notify(`A job named "${name}" already exists`, "error");
+    return;
+  }
+
+  const typeChoice = await ctx.ui.select("Job Type", [
+    "Cron (recurring)",
+    "Once (one-shot)",
+    "Interval (periodic)",
+  ]);
+  if (!typeChoice) return;
+
+  const typeMap: Record<string, "cron" | "once" | "interval"> = {
+    "Cron (recurring)": "cron",
+    "Once (one-shot)": "once",
+    "Interval (periodic)": "interval",
+  };
+  const jobType = typeMap[typeChoice];
+
+  const placeholders: Record<string, string> = {
+    cron: "6-field cron, e.g. '0 0 9 * * *' for 9am daily",
+    once: "ISO timestamp or relative time (+10s, +5m, +1h)",
+    interval: "Duration, e.g. '5m', '1h', '30s'",
+  };
+
+  // Re-prompt the schedule field on validation failure so the user
+  // doesn't lose name/type and have to start over from the menu.
+  let schedule: string | undefined;
+  let intervalMs: number | undefined;
+  let placeholder = placeholders[jobType];
+  while (true) {
+    const raw = await ctx.ui.input("Schedule", placeholder);
+    if (!raw) return;
+    const result = CronScheduler.validateSchedule(jobType, raw.trim());
+    if (result.ok) {
+      schedule = result.schedule;
+      intervalMs = result.intervalMs;
+      break;
+    }
+    placeholder = result.error;
+  }
+
+  const prompt = await ctx.ui.input("Prompt", "Enter the prompt to execute");
+  if (!prompt) return;
+
+  const human = CronScheduler.describeSchedule(jobType, schedule);
+  const confirmed = await ctx.ui.confirm(
+    "Confirm",
+    `Save "${name}"?\nSchedule: ${human}\nPrompt: ${prompt}`,
+  );
+  if (!confirmed) return;
+
+  const session =
+    (settings.defaultJobScope ?? "session") === "session" ? mySessionId : undefined;
+  const job: CronJob = {
+    id: nanoid(10),
+    name,
+    schedule,
+    prompt,
+    enabled: true,
+    type: jobType,
+    intervalMs,
+    createdAt: new Date().toISOString(),
+    runCount: 0,
+    session,
+  };
+
+  storage.addJob(job);
+  scheduler.addJob(job);
+  ctx.ui.notify(`Created scheduled prompt: ${name} (${human})`, "info");
+}
 
 export default async function (pi: ExtensionAPI) {
   let storage: CronStorage;
@@ -149,220 +240,47 @@ export default async function (pi: ExtensionAPI) {
     description: "Manage scheduled prompts interactively",
     handler: async (_args, ctx) => {
       const mySessionId = ctx.sessionManager.getSessionId();
-      const myJobs = () =>
-        storage
-          .getAllJobs()
-          .filter((j) => CronScheduler.isLoadedFor(j, mySessionId));
 
-      const action = await ctx.ui.select("Scheduled Prompts", [
-        "View All Jobs",
-        "Add New Job",
-        "Toggle Job (Enable/Disable)",
-        "Remove Job",
-        "Cleanup Disabled Jobs",
-        "Settings",
-      ]);
-
+      const action = await ctx.ui.select("Scheduled Prompts", ["Jobs", "Settings"]);
       if (!action) return;
 
-      const actionMap: Record<string, string> = {
-        "View All Jobs": "list",
-        "Add New Job": "add",
-        "Toggle Job (Enable/Disable)": "toggle",
-        "Remove Job": "remove",
-        "Cleanup Disabled Jobs": "cleanup",
-        "Settings": "settings",
-      };
-      const actionKey = actionMap[action];
-
-      switch (actionKey) {
-        case "list": {
-          const jobs = myJobs();
-          if (jobs.length === 0) {
-            ctx.ui.notify("No scheduled prompts configured", "info");
-            return;
-          }
-
-          const lines = ["Scheduled prompts:", ""];
-          for (const job of jobs) {
-            const status = job.enabled ? "✓" : "✗";
-            const nextRun = scheduler.getNextRun(job.id);
-            lines.push(`${status} ${job.name} (${job.id})`);
-            lines.push(`  Schedule: ${job.schedule} | Type: ${job.type}`);
-            lines.push(`  Prompt: ${job.prompt}`);
-            if (nextRun) {
-              lines.push(`  Next run: ${nextRun.toISOString()}`);
+      switch (action) {
+        case "Jobs": {
+          // Hide the Jobs overlay while the add flow's dialogs are open —
+          // otherwise it sits on top of them and steals input.
+          let jobsOverlay: OverlayHandle | undefined;
+          const wrappedRunAdd = async () => {
+            jobsOverlay?.setHidden(true);
+            try {
+              await runAddFlow(ctx, storage, scheduler, settings, mySessionId);
+            } finally {
+              jobsOverlay?.setHidden(false);
+              jobsOverlay?.focus();
             }
-            lines.push(`  Runs: ${job.runCount}`);
-            lines.push("");
-          }
-
-          ctx.ui.notify(lines.join("\n"), "info");
-          break;
-        }
-
-        case "add": {
-          const name = await ctx.ui.input("Job Name", "Enter a name for this scheduled prompt");
-          if (!name) return;
-
-          if (storage.hasJobWithName(name)) {
-            ctx.ui.notify(`A job named "${name}" already exists`, "error");
-            return;
-          }
-
-          const typeChoice = await ctx.ui.select("Job Type", [
-            "Cron (recurring)",
-            "Once (one-shot)",
-            "Interval (periodic)",
-          ]);
-          if (!typeChoice) return;
-
-          const typeMap: Record<string, "cron" | "once" | "interval"> = {
-            "Cron (recurring)": "cron",
-            "Once (one-shot)": "once",
-            "Interval (periodic)": "interval",
           };
-          const jobType = typeMap[typeChoice];
-
-          const placeholders: Record<string, string> = {
-            cron: "6-field cron, e.g. '0 0 9 * * *' for 9am daily",
-            once: "ISO timestamp or relative time (+10s, +5m, +1h)",
-            interval: "Duration, e.g. '5m', '1h', '30s'",
-          };
-
-          // Re-prompt the schedule field on validation failure so the user
-          // doesn't lose name/type and have to start over from the menu.
-          let schedule: string | undefined;
-          let intervalMs: number | undefined;
-          let placeholder = placeholders[jobType];
-          while (true) {
-            const raw = await ctx.ui.input("Schedule", placeholder);
-            if (!raw) return;
-            const result = CronScheduler.validateSchedule(jobType, raw.trim());
-            if (result.ok) {
-              schedule = result.schedule;
-              intervalMs = result.intervalMs;
-              break;
-            }
-            placeholder = result.error;
-          }
-
-          const prompt = await ctx.ui.input("Prompt", "Enter the prompt to execute");
-          if (!prompt) return;
-
-          const human = CronScheduler.describeSchedule(jobType, schedule);
-          const confirmed = await ctx.ui.confirm(
-            "Confirm",
-            `Save "${name}"?\nSchedule: ${human}\nPrompt: ${prompt}`,
+          await ctx.ui.custom<void>(
+            (tui, theme, _kb, done) =>
+              new JobsView(
+                storage,
+                scheduler,
+                mySessionId,
+                wrappedRunAdd,
+                theme,
+                () => tui.requestRender(),
+                () => done(undefined),
+              ),
+            {
+              overlay: true,
+              overlayOptions: { width: "100%", maxHeight: "100%" },
+              onHandle: (h) => {
+                jobsOverlay = h;
+              },
+            },
           );
-          if (!confirmed) return;
-
-          const session =
-            (settings.defaultJobScope ?? "session") === "session" ? mySessionId : undefined;
-          const job = {
-            id: nanoid(10),
-            name,
-            schedule,
-            prompt,
-            enabled: true,
-            type: jobType,
-            intervalMs,
-            createdAt: new Date().toISOString(),
-            runCount: 0,
-            session,
-          };
-
-          storage.addJob(job);
-          scheduler.addJob(job);
-          ctx.ui.notify(`Created scheduled prompt: ${name} (${human})`, "info");
           break;
         }
 
-        case "toggle": {
-          const jobs = myJobs();
-          if (jobs.length === 0) {
-            ctx.ui.notify("No scheduled prompts configured", "info");
-            return;
-          }
-
-          const jobId = await ctx.ui.select(
-            "Select Job to Toggle",
-            jobs.map((j) => `${j.enabled ? "✓" : "✗"} ${j.name}`)
-          );
-
-          if (!jobId) return;
-
-          // Find job by matching the label
-          const selectedIndex = jobs.findIndex(
-            (j) => `${j.enabled ? "✓" : "✗"} ${j.name}` === jobId
-          );
-          const job = selectedIndex >= 0 ? jobs[selectedIndex] : undefined;
-          if (job) {
-            const newEnabled = !job.enabled;
-            storage.updateJob(job.id, { enabled: newEnabled });
-            const updated = { ...job, enabled: newEnabled };
-            scheduler.updateJob(job.id, updated);
-            ctx.ui.notify(`${newEnabled ? "Enabled" : "Disabled"} job: ${job.name}`, "info");
-          }
-          break;
-        }
-
-        case "remove": {
-          const jobs = myJobs();
-          if (jobs.length === 0) {
-            ctx.ui.notify("No scheduled prompts configured", "info");
-            return;
-          }
-
-          const jobId = await ctx.ui.select(
-            "Select Job to Remove",
-            jobs.map((j) => j.name)
-          );
-
-          if (!jobId) return;
-
-          // Find job by name
-          const job = jobs.find((j) => j.name === jobId);
-          if (job) {
-            const confirmed = await ctx.ui.confirm(
-              "Confirm Removal",
-              `Remove scheduled prompt "${job.name}"?`
-            );
-
-            if (confirmed) {
-              storage.removeJob(job.id);
-              scheduler.removeJob(job.id);
-              ctx.ui.notify(`Removed job: ${job.name}`, "info");
-            }
-          }
-          break;
-        }
-
-        case "cleanup": {
-          const jobs = myJobs();
-          const disabledJobs = jobs.filter((j) => !j.enabled);
-
-          if (disabledJobs.length === 0) {
-            ctx.ui.notify("No disabled jobs to clean up", "info");
-            return;
-          }
-
-          const confirmed = await ctx.ui.confirm(
-            "Confirm Cleanup",
-            `Remove ${disabledJobs.length} disabled job(s)?`
-          );
-
-          if (confirmed) {
-            for (const job of disabledJobs) {
-              storage.removeJob(job.id);
-              scheduler.removeJob(job.id);
-            }
-            ctx.ui.notify(`Removed ${disabledJobs.length} disabled job(s)`, "info");
-          }
-          break;
-        }
-
-        case "settings": {
+        case "Settings": {
           // Loop so the menu redraws with current state after each change —
           // the menu is the truth display; only persist failures need a toast.
           while (true) {
@@ -378,7 +296,7 @@ export default async function (pi: ExtensionAPI) {
               const next = !isWidgetVisible();
               settings = { ...settings, widgetVisible: next };
               next ? widget.show(ctx) : widget.hide(ctx);
-              const persisted = saveSettings(ctx.cwd, settings);
+              const persisted = saveSettings(ctx.cwd, { widgetVisible: next });
               if (!persisted) {
                 ctx.ui.notify(
                   `Widget ${next ? "shown" : "hidden"} (session only; failed to persist)`,
@@ -389,7 +307,7 @@ export default async function (pi: ExtensionAPI) {
               // Affects newly-created jobs only; existing jobs keep their binding.
               const next = bound ? "workdir" : "session";
               settings = { ...settings, defaultJobScope: next };
-              const persisted = saveSettings(ctx.cwd, settings);
+              const persisted = saveSettings(ctx.cwd, { defaultJobScope: next });
               if (!persisted) {
                 ctx.ui.notify(
                   `Bind new jobs to session: ${next === "session" ? "yes" : "no"} (session only; failed to persist)`,

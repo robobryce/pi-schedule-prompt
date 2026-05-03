@@ -46,7 +46,8 @@ function formatRelativeTime(date: Date | string): string {
  */
 export class CronWidget {
   private refreshInterval?: NodeJS.Timeout;
-  private invalidateFn?: () => void;
+  private ctx?: any;
+  private unsubscribe: () => void;
 
   constructor(
     private storage: CronStorage,
@@ -55,10 +56,9 @@ export class CronWidget {
     private isVisible: () => boolean,
     private sessionId: string | undefined = undefined,
   ) {
-    // Listen for cron changes to refresh widget
-    this.pi.events.on("cron:change", () => {
-      this.refresh();
-    });
+    // Re-render on add/remove/update/fire/error so the row count, status icons,
+    // and counters stay current without waiting for the 30s tick.
+    this.unsubscribe = this.pi.events.on("cron:change", () => this.refresh());
   }
 
   /** Jobs this session loads — same predicate as the scheduler. */
@@ -68,56 +68,30 @@ export class CronWidget {
       .filter((j) => CronScheduler.isLoadedFor(j, this.sessionId));
   }
 
-  /**
-   * Show the widget
-   */
   show(ctx: any): void {
-    // Respect visibility setting
-    if (!this.isVisible()) {
-      this.hide(ctx);
-      return;
-    }
+    this.ctx = ctx;
 
-    // Auto-hide if no jobs are loaded for this session
-    const jobs = this.loadedJobs();
-    if (jobs.length === 0) {
+    if (!this.isVisible() || this.loadedJobs().length === 0) {
       this.hide(ctx);
       return;
     }
 
     ctx.ui.setWidget(
       WIDGET_ID,
-      (_tui: any, theme: any) => {
-        const component = {
-          render: (width: number) => this.renderWidget(width, theme),
-          invalidate: () => {
-            this.invalidateFn = () => {
-              if (ctx.ui) {
-                this.show(ctx);
-              }
-            };
-          },
-        };
-
-        // Auto-refresh every 30 seconds
-        if (this.refreshInterval) {
-          clearInterval(this.refreshInterval);
-        }
-        this.refreshInterval = setInterval(() => {
-          if (this.invalidateFn) {
-            this.invalidateFn();
-          }
-        }, 30000);
-
-        return component;
-      },
-      { placement: "belowEditor" }
+      (_tui: any, theme: any) => ({
+        render: (width: number) => this.renderWidget(width, theme),
+        invalidate: () => {},
+      }),
+      { placement: "belowEditor" },
     );
+
+    // 30s tick re-renders so relative-time labels ("in 5m") update even when
+    // nothing else changes. Same path as cron:change-driven refresh.
+    if (!this.refreshInterval) {
+      this.refreshInterval = setInterval(() => this.refresh(), 30000);
+    }
   }
 
-  /**
-   * Hide the widget
-   */
   hide(ctx: any): void {
     ctx.ui.setWidget(WIDGET_ID, undefined);
     if (this.refreshInterval) {
@@ -126,13 +100,10 @@ export class CronWidget {
     }
   }
 
-  /**
-   * Refresh the widget display
-   */
+  /** Re-mount the widget against the latest storage state. `show` handles the
+   *  visibility / empty-list / first-mount cases uniformly. */
   private refresh(): void {
-    if (this.invalidateFn) {
-      this.invalidateFn();
-    }
+    if (this.ctx) this.show(this.ctx);
   }
 
   /**
@@ -236,6 +207,7 @@ export class CronWidget {
    * Cleanup
    */
   destroy(): void {
+    this.unsubscribe();
     if (this.refreshInterval) {
       clearInterval(this.refreshInterval);
     }

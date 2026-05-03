@@ -47,12 +47,20 @@ export function loadSettings(cwd: string): ScheduleSettings {
   return { ...read(join(getAgentDir(), FILE)), ...read(join(cwd, ".pi", FILE)) };
 }
 
-/** Returns false on IO failure so the caller can surface a "session only" toast. */
-export function saveSettings(cwd: string, s: ScheduleSettings): boolean {
+/**
+ * Apply a partial update to the project settings file. Reads the *project*
+ * file (not the merged in-memory state), spreads `change` over it, writes
+ * back. This way the project file only ever contains deliberate overrides,
+ * so global defaults bleed through correctly when the user later edits them.
+ *
+ * Returns false on IO failure so the caller can surface a "session only" toast.
+ */
+export function saveSettings(cwd: string, change: Partial<ScheduleSettings>): boolean {
   const path = join(cwd, ".pi", FILE);
   try {
+    const merged = { ...read(path), ...change };
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, JSON.stringify(s, null, 2), "utf-8");
+    writeFileSync(path, JSON.stringify(merged, null, 2), "utf-8");
     return true;
   } catch {
     return false;
