@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-31
+
+### Changed
+- **Breaking**: pi runtime packages migrated from the `@mariozechner/*` scope to `@earendil-works/*`. Peer deps are now `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui`, with the floor raised to `>=0.74.0`. Import paths in `src/` updated accordingly.
+- `Type`/`Static` are now imported from `@earendil-works/pi-ai` (which re-exports them from `typebox`) rather than the `typebox` package directly — using a single typebox identity avoids a `TUnsafe` portability error in the inferred tool-param type. Dropped the direct `typebox` dependency.
+
 ## [0.3.0] - 2026-05-03
 
 ### Added
