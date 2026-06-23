@@ -334,3 +334,143 @@ describe("schedule_prompt — session binding", () => {
     expect(storage.getJob("live")).toBeDefined();
   });
 });
+
+describe("schedule_prompt — extensions/skills", () => {
+  describe("add", () => {
+    it("accepts extensions=true and stores it on the job", async () => {
+      const { tool } = buildTool();
+      const result = await tool.execute(
+        "call",
+        {
+          action: "add",
+          schedule: "+10s",
+          type: "once",
+          prompt: "test",
+          model: "haiku",
+          extensions: true,
+        } as any,
+        undefined,
+        undefined,
+        makeCtx(),
+      );
+      expect(result.details?.error).toBeUndefined();
+      expect(result.details?.jobs?.[0].extensions).toBe(true);
+    });
+
+    it("accepts skills=true and stores it on the job", async () => {
+      const { tool } = buildTool();
+      const result = await tool.execute(
+        "call",
+        {
+          action: "add",
+          schedule: "+10s",
+          type: "once",
+          prompt: "test",
+          model: "haiku",
+          skills: true,
+        } as any,
+        undefined,
+        undefined,
+        makeCtx(),
+      );
+      expect(result.details?.error).toBeUndefined();
+      expect(result.details?.jobs?.[0].skills).toBe(true);
+    });
+
+    it("defaults extensions to undefined when not provided", async () => {
+      const { tool } = buildTool();
+      const result = await tool.execute(
+        "call",
+        {
+          action: "add",
+          schedule: "+10s",
+          type: "once",
+          prompt: "test",
+          model: "haiku",
+        } as any,
+        undefined,
+        undefined,
+        makeCtx(),
+      );
+      expect(result.details?.error).toBeUndefined();
+      expect(result.details?.jobs?.[0].extensions).toBeUndefined();
+    });
+
+    it("defaults skills to undefined when not provided", async () => {
+      const { tool } = buildTool();
+      const result = await tool.execute(
+        "call",
+        {
+          action: "add",
+          schedule: "+10s",
+          type: "once",
+          prompt: "test",
+          model: "haiku",
+        } as any,
+        undefined,
+        undefined,
+        makeCtx(),
+      );
+      expect(result.details?.error).toBeUndefined();
+      expect(result.details?.jobs?.[0].skills).toBeUndefined();
+    });
+  });
+
+  describe("update", () => {
+    it("accepts setting extensions=true on an existing subagent job", async () => {
+      const { tool, storage } = buildTool([exampleJob({ id: "j1", model: "haiku" })]);
+      const result = await tool.execute(
+        "call",
+        { action: "update", jobId: "j1", extensions: true } as any,
+        undefined,
+        undefined,
+        makeCtx(),
+      );
+      expect(result.details?.error).toBeUndefined();
+      expect(storage.getJob("j1").extensions).toBe(true);
+    });
+
+    it("accepts setting extensions=false on an existing subagent job", async () => {
+      const { tool, storage } = buildTool([
+        exampleJob({ id: "j1", model: "haiku", extensions: true }),
+      ]);
+      const result = await tool.execute(
+        "call",
+        { action: "update", jobId: "j1", extensions: false } as any,
+        undefined,
+        undefined,
+        makeCtx(),
+      );
+      expect(result.details?.error).toBeUndefined();
+      expect(storage.getJob("j1").extensions).toBe(false);
+    });
+
+    it("accepts setting skills=true on an existing subagent job", async () => {
+      const { tool, storage } = buildTool([exampleJob({ id: "j2", model: "haiku" })]);
+      const result = await tool.execute(
+        "call",
+        { action: "update", jobId: "j2", skills: true } as any,
+        undefined,
+        undefined,
+        makeCtx(),
+      );
+      expect(result.details?.error).toBeUndefined();
+      expect(storage.getJob("j2").skills).toBe(true);
+    });
+
+    it("accepts setting skills=false on an existing subagent job", async () => {
+      const { tool, storage } = buildTool([
+        exampleJob({ id: "j2", model: "haiku", skills: true }),
+      ]);
+      const result = await tool.execute(
+        "call",
+        { action: "update", jobId: "j2", skills: false } as any,
+        undefined,
+        undefined,
+        makeCtx(),
+      );
+      expect(result.details?.error).toBeUndefined();
+      expect(storage.getJob("j2").skills).toBe(false);
+    });
+  });
+});

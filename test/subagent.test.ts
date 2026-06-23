@@ -1,9 +1,30 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   describeAvailableModels,
   getLastAssistantText,
   resolveModel,
+  runSubagentOnce,
 } from "../src/subagent.js";
+
+// Mock the pi-coding-agent module for runSubagentOnce tests
+// Must be at file scope — vitest hoists vi.mock to the top automatically.
+vi.mock("@earendil-works/pi-coding-agent", () => ({
+  createAgentSession: vi.fn(),
+  // Instantiated via `new DefaultResourceLoader(...)`, so the mock must be a
+  // constructable function expression — an arrow function can't be `new`-ed.
+  // biome-ignore lint/complexity/useArrowFunction: used as a constructor mock
+  DefaultResourceLoader: vi.fn(function () {
+    return { reload: vi.fn().mockResolvedValue(undefined) };
+  }),
+  getAgentDir: vi.fn(() => "/tmp/agent-dir"),
+  SessionManager: { inMemory: vi.fn(() => ({ getSessionId: () => "test" })) },
+  SettingsManager: { create: vi.fn(() => ({})) },
+}));
+
+import { createAgentSession, DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
+
+const mockCreateAgentSession = vi.mocked(createAgentSession);
+const mockDefaultResourceLoader = vi.mocked(DefaultResourceLoader);
 
 // Mirror of the minimal Model shape resolveModel actually touches: provider, id, name.
 const MODELS = [
@@ -172,5 +193,216 @@ describe("getLastAssistantText", () => {
         ]),
       ),
     ).toBe("real text");
+  });
+});
+
+describe("runSubagentOnce", () => {
+  beforeEach(() => {
+    mockCreateAgentSession.mockReset();
+    mockDefaultResourceLoader.mockReset();
+  });
+
+  function makeFakeSession() {
+    return {
+      abort: vi.fn(),
+      subscribe: vi.fn(() => vi.fn()),
+      prompt: vi.fn().mockResolvedValue(undefined),
+      messages: [],
+      bindExtensions: vi.fn(),
+    };
+  }
+
+  function makeCtx() {
+    return {
+      cwd: "/tmp",
+      modelRegistry: {
+        find: () => MODELS[0],
+        getAvailable: () => MODELS,
+      },
+      sessionManager: {
+        getSessionId: () => "test",
+      },
+    } as any;
+  }
+
+  it("default: creates subagent with noExtensions=true, noSkills=true, tools=DEFAULT_TOOL_NAMES, no bindExtensions", async () => {
+    const fakeSession = makeFakeSession();
+    mockCreateAgentSession.mockResolvedValue({ session: fakeSession });
+
+    const result = await runSubagentOnce(makeCtx(), "test prompt", MODELS[0].id);
+
+    expect(result.ok).toBe(true);
+
+    // Check DefaultResourceLoader was created with noExtensions: true, noSkills: true
+    const loaderOptions = mockDefaultResourceLoader.mock.calls[0][0];
+    expect(loaderOptions.noExtensions).toBe(true);
+    expect(loaderOptions.noSkills).toBe(true);
+
+    // Check createAgentSession was called with tools: DEFAULT_TOOL_NAMES
+    const sessionOptions = mockCreateAgentSession.mock.calls[0][0];
+    expect(sessionOptions.tools).toEqual(["bash", "read", "edit", "write", "grep", "find", "ls"]);
+
+    // bindExtensions should NOT have been called
+    expect(fakeSession.bindExtensions).not.toHaveBeenCalled();
+  });
+
+  it("extensions:true: sets noExtensions=false, noSkills=true, tools=undefined, calls bindExtensions", async () => {
+    const fakeSession = makeFakeSession();
+    mockCreateAgentSession.mockResolvedValue({ session: fakeSession });
+
+    const result = await runSubagentOnce(makeCtx(), "test prompt", MODELS[0].id, undefined, {
+      extensions: true,
+    });
+
+    expect(result.ok).toBe(true);
+
+    // Check DefaultResourceLoader was created with noExtensions: false, noSkills: true
+    const loaderOptions = mockDefaultResourceLoader.mock.calls[0][0];
+    expect(loaderOptions.noExtensions).toBe(false);
+    expect(loaderOptions.noSkills).toBe(true);
+
+    // Check createAgentSession was called with tools: undefined
+    const sessionOptions = mockCreateAgentSession.mock.calls[0][0];
+    expect(sessionOptions.tools).toBeUndefined();
+
+    // bindExtensions should have been called
+    expect(fakeSession.bindExtensions).toHaveBeenCalledTimes(1);
+  });
+
+  it("skills:true: sets noExtensions=true, noSkills=false, tools=DEFAULT_TOOL_NAMES, no bindExtensions", async () => {
+    const fakeSession = makeFakeSession();
+    mockCreateAgentSession.mockResolvedValue({ session: fakeSession });
+
+    const result = await runSubagentOnce(makeCtx(), "test prompt", MODELS[0].id, undefined, {
+      skills: true,
+    });
+
+    expect(result.ok).toBe(true);
+
+    // Check DefaultResourceLoader was created with noExtensions: true, noSkills: false
+    const loaderOptions = mockDefaultResourceLoader.mock.calls[0][0];
+    expect(loaderOptions.noExtensions).toBe(true);
+    expect(loaderOptions.noSkills).toBe(false);
+
+    // Check createAgentSession was called with tools: DEFAULT_TOOL_NAMES
+    const sessionOptions = mockCreateAgentSession.mock.calls[0][0];
+    expect(sessionOptions.tools).toEqual(["bash", "read", "edit", "write", "grep", "find", "ls"]);
+
+    // bindExtensions should NOT have been called
+    expect(fakeSession.bindExtensions).not.toHaveBeenCalled();
+  });
+
+  it("extensions:true + skills:true: sets noExtensions=false, noSkills=false, tools=undefined, calls bindExtensions", async () => {
+    const fakeSession = makeFakeSession();
+    mockCreateAgentSession.mockResolvedValue({ session: fakeSession });
+
+    const result = await runSubagentOnce(makeCtx(), "test prompt", MODELS[0].id, undefined, {
+      extensions: true,
+      skills: true,
+    });
+
+    expect(result.ok).toBe(true);
+
+    // Check DefaultResourceLoader was created with noExtensions: false, noSkills: false
+    const loaderOptions = mockDefaultResourceLoader.mock.calls[0][0];
+    expect(loaderOptions.noExtensions).toBe(false);
+    expect(loaderOptions.noSkills).toBe(false);
+
+    // Check createAgentSession was called with tools: undefined
+    const sessionOptions = mockCreateAgentSession.mock.calls[0][0];
+    expect(sessionOptions.tools).toBeUndefined();
+
+    // bindExtensions should have been called
+    expect(fakeSession.bindExtensions).toHaveBeenCalledTimes(1);
+  });
+
+  it("extensions:[\"pkg\"]: filters extensions, sets noExtensions=false, tools=undefined, calls bindExtensions", async () => {
+    const fakeSession = makeFakeSession();
+    mockCreateAgentSession.mockResolvedValue({ session: fakeSession });
+
+
+    const result = await runSubagentOnce(makeCtx(), "test prompt", MODELS[0].id, undefined, {
+      extensions: ["telegram"],
+    });
+
+    expect(result.ok).toBe(true);
+
+    const loaderOptions = mockDefaultResourceLoader.mock.calls[0][0];
+    expect(loaderOptions.noExtensions).toBe(false);
+    expect(typeof loaderOptions.extensionsOverride).toBe("function");
+
+    // The override keeps only extensions whose path matches a requested name
+    // (substring match against the extension path).
+    const filtered = loaderOptions.extensionsOverride({
+      extensions: [{ path: "npm:pi-telegram" }, { path: "npm:pi-mcp-adapter" }],
+    });
+    expect(filtered.extensions.map((e: { path: string }) => e.path)).toEqual(["npm:pi-telegram"]);
+
+    const sessionOptions = mockCreateAgentSession.mock.calls[0][0];
+    expect(sessionOptions.tools).toBeUndefined();
+
+    expect(fakeSession.bindExtensions).toHaveBeenCalledTimes(1);
+  });
+
+  it("skills:[\"git\"]: filters skills, sets noSkills=false", async () => {
+    const fakeSession = makeFakeSession();
+    mockCreateAgentSession.mockResolvedValue({ session: fakeSession });
+
+
+    const result = await runSubagentOnce(makeCtx(), "test prompt", MODELS[0].id, undefined, {
+      skills: ["git"],
+    });
+
+    expect(result.ok).toBe(true);
+
+    const loaderOptions = mockDefaultResourceLoader.mock.calls[0][0];
+    expect(loaderOptions.noSkills).toBe(false);
+    expect(typeof loaderOptions.skillsOverride).toBe("function");
+
+    // The override keeps only exactly-named skills — "git" must not match "github".
+    const filtered = loaderOptions.skillsOverride({
+      skills: [{ name: "git" }, { name: "github" }, { name: "docs" }],
+    });
+    expect(filtered.skills.map((s: { name: string }) => s.name)).toEqual(["git"]);
+
+    expect(fakeSession.bindExtensions).not.toHaveBeenCalled();
+  });
+
+  it("skills:[]: empty array means none — same as unset", async () => {
+    const fakeSession = makeFakeSession();
+    mockCreateAgentSession.mockResolvedValue({ session: fakeSession });
+
+    const result = await runSubagentOnce(makeCtx(), "test prompt", MODELS[0].id, undefined, {
+      skills: [],
+    });
+
+    expect(result.ok).toBe(true);
+
+    const loaderOptions = mockDefaultResourceLoader.mock.calls[0][0];
+    expect(loaderOptions.noSkills).toBe(true);
+    expect(loaderOptions.skillsOverride).toBeUndefined();
+
+    expect(fakeSession.bindExtensions).not.toHaveBeenCalled();
+  });
+
+  it("extensions:[]: empty array means none — same as unset", async () => {
+    const fakeSession = makeFakeSession();
+    mockCreateAgentSession.mockResolvedValue({ session: fakeSession });
+
+    const result = await runSubagentOnce(makeCtx(), "test prompt", MODELS[0].id, undefined, {
+      extensions: [],
+    });
+
+    expect(result.ok).toBe(true);
+
+    // An empty array must not widen the toolset or load extensions.
+    const loaderOptions = mockDefaultResourceLoader.mock.calls[0][0];
+    expect(loaderOptions.noExtensions).toBe(true);
+    expect(loaderOptions.extensionsOverride).toBeUndefined();
+
+    const sessionOptions = mockCreateAgentSession.mock.calls[0][0];
+    expect(sessionOptions.tools).toEqual(["bash", "read", "edit", "write", "grep", "find", "ls"]);
+
+    expect(fakeSession.bindExtensions).not.toHaveBeenCalled();
   });
 });
